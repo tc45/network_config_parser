@@ -1,0 +1,7 @@
+pandas
+ntc-templates
+openpyxl
+netmiko
+tabulate
+rich
+ciscoconfparse2
