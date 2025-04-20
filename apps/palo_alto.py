@@ -3,47 +3,200 @@ Parser for Palo Alto configuration files.
 Allows viewing nested dictionary structure at configurable depth levels.
 """
 import xml.etree.ElementTree as ET
+import logging
 from typing import Dict, Any, Optional
 from tabulate import tabulate
 
+# Get module logger
+logger = logging.getLogger(__name__)
 
-def xml_to_dict(element: ET.Element) -> Dict[str, Any]:
-    """
-    Convert XML to dictionary recursively.
+class PaloAltoParser:
+    """Parser for Palo Alto configuration files"""
 
-    Args:
-        element: XML element to convert
+    def __init__(self):
+        """Initialize the Palo Alto parser"""
+        self.config_dict: Dict[str, Any] = {}
+        self.hostname = "unknown"
 
-    Returns:
-        Dictionary representation of the XML
-    """
-    result = {}
+    def parse_file(self, filepath: str) -> Dict[str, Any]:
+        """
+        Parse a Palo Alto configuration file.
 
-    # Handle attributes if present
-    if element.attrib:
-        result.update(element.attrib)
+        Args:
+            filepath: Path to the configuration file
 
-    # Handle child elements
-    for child in element:
-        child_dict = xml_to_dict(child)
+        Returns:
+            Dict containing the parsed data
+        """
+        try:
+            logger.info(f"Parsing Palo Alto configuration file: {filepath}")
+            tree = ET.parse(filepath)
+            root = tree.getroot()
+            
+            # Convert XML to dictionary
+            self.config_dict = self._xml_to_dict(root)
+            
+            # Extract hostname if available
+            self._extract_hostname()
+            
+            # Parse sections into structured data
+            parsed_data = self._parse_sections()
+            
+            logger.info("Successfully parsed Palo Alto configuration")
+            return parsed_data
+            
+        except ET.ParseError as e:
+            logger.error(f"Failed to parse XML file {filepath}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error processing Palo Alto configuration: {e}")
+            raise
 
-        if child.tag in result:
-            # If tag already exists, convert to list or append
-            if isinstance(result[child.tag], list):
-                result[child.tag].append(child_dict)
+    def _extract_hostname(self) -> None:
+        """Extract hostname from the configuration"""
+        try:
+            # Try to find hostname in device-group or system settings
+            if 'devices' in self.config_dict:
+                devices = self.config_dict['devices']
+                if isinstance(devices, dict) and 'entry' in devices:
+                    self.hostname = devices['entry'].get('hostname', 'unknown')
+            logger.debug(f"Found hostname: {self.hostname}")
+        except Exception as e:
+            logger.warning(f"Could not extract hostname: {e}")
+
+    def _parse_sections(self) -> Dict[str, Any]:
+        """Parse configuration sections into structured data"""
+        parsed_data = {
+            'Interfaces': self._parse_interfaces(),
+            'Security Policies': self._parse_security_policies(),
+            'NAT Policies': self._parse_nat_policies(),
+            'Objects': self._parse_objects()
+        }
+        return parsed_data
+
+    def _parse_interfaces(self) -> list:
+        """Parse interface configurations"""
+        interfaces = []
+        try:
+            # Extract interface configurations
+            if 'network' in self.config_dict:
+                network = self.config_dict['network']
+                if 'interface' in network:
+                    for interface in network['interface'].get('entry', []):
+                        interface_data = {
+                            'Name': interface.get('name', ''),
+                            'Type': interface.get('type', ''),
+                            'IP': interface.get('ip', ''),
+                            'Zone': interface.get('zone', ''),
+                            'VLAN': interface.get('vlan', '')
+                        }
+                        interfaces.append(interface_data)
+        except Exception as e:
+            logger.error(f"Error parsing interfaces: {e}")
+        return interfaces
+
+    def _parse_security_policies(self) -> list:
+        """Parse security policies"""
+        policies = []
+        try:
+            if 'policies' in self.config_dict:
+                security = self.config_dict['policies'].get('security', {})
+                for rule in security.get('rules', []):
+                    policy_data = {
+                        'Name': rule.get('name', ''),
+                        'Action': rule.get('action', ''),
+                        'Source Zone': rule.get('from', ''),
+                        'Destination Zone': rule.get('to', ''),
+                        'Source': rule.get('source', ''),
+                        'Destination': rule.get('destination', ''),
+                        'Service': rule.get('service', ''),
+                        'Application': rule.get('application', '')
+                    }
+                    policies.append(policy_data)
+        except Exception as e:
+            logger.error(f"Error parsing security policies: {e}")
+        return policies
+
+    def _parse_nat_policies(self) -> list:
+        """Parse NAT policies"""
+        nat_rules = []
+        try:
+            if 'policies' in self.config_dict:
+                nat = self.config_dict['policies'].get('nat', {})
+                for rule in nat.get('rules', []):
+                    nat_data = {
+                        'Name': rule.get('name', ''),
+                        'Source': rule.get('source', ''),
+                        'Destination': rule.get('destination', ''),
+                        'Service': rule.get('service', ''),
+                        'Translation': rule.get('translation', '')
+                    }
+                    nat_rules.append(nat_data)
+        except Exception as e:
+            logger.error(f"Error parsing NAT policies: {e}")
+        return nat_rules
+
+    def _parse_objects(self) -> list:
+        """Parse address and service objects"""
+        objects = []
+        try:
+            if 'objects' in self.config_dict:
+                obj_config = self.config_dict['objects']
+                # Parse address objects
+                for addr in obj_config.get('address', {}).get('entry', []):
+                    obj_data = {
+                        'Name': addr.get('name', ''),
+                        'Type': 'address',
+                        'Value': addr.get('ip-netmask', addr.get('fqdn', ''))
+                    }
+                    objects.append(obj_data)
+                # Parse service objects
+                for svc in obj_config.get('service', {}).get('entry', []):
+                    obj_data = {
+                        'Name': svc.get('name', ''),
+                        'Type': 'service',
+                        'Protocol': svc.get('protocol', ''),
+                        'Port': svc.get('port', '')
+                    }
+                    objects.append(obj_data)
+        except Exception as e:
+            logger.error(f"Error parsing objects: {e}")
+        return objects
+
+    @staticmethod
+    def _xml_to_dict(element: ET.Element) -> Dict[str, Any]:
+        """Convert XML to dictionary recursively"""
+        result = {}
+
+        # Handle attributes if present
+        if element.attrib:
+            result.update(element.attrib)
+
+        # Handle child elements
+        for child in element:
+            child_dict = PaloAltoParser._xml_to_dict(child)
+
+            if child.tag in result:
+                # If tag already exists, convert to list or append
+                if isinstance(result[child.tag], list):
+                    result[child.tag].append(child_dict)
+                else:
+                    result[child.tag] = [result[child.tag], child_dict]
             else:
-                result[child.tag] = [result[child.tag], child_dict]
-        else:
-            result[child.tag] = child_dict
+                result[child.tag] = child_dict
 
-    # Handle element text
-    if element.text and element.text.strip():
-        if result:
-            result['text'] = element.text.strip()
-        else:
-            result = element.text.strip()
+        # Handle element text
+        if element.text and element.text.strip():
+            if result:
+                result['text'] = element.text.strip()
+            else:
+                result = element.text.strip()
 
-    return result
+        return result
+
+    def get_hostname(self) -> str:
+        """Return the hostname found during parsing"""
+        return self.hostname
 
 
 def print_dict_levels(d: Dict[str, Any], current_level: int = 0,
@@ -180,7 +333,7 @@ def main():
     root = tree.getroot()
 
     # Convert to dictionary
-    config_dict = xml_to_dict(root)
+    config_dict = PaloAltoParser._xml_to_dict(root)
 
     # Display interactive menu
     display_menu(config_dict)

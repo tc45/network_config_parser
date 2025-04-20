@@ -14,50 +14,13 @@ from typing import Dict, List, Optional
 from ciscoconfparse2 import CiscoConfParse
 from tabulate import tabulate
 import ipaddress
-from rich.logging import RichHandler
-from rich.console import Console
-from rich.theme import Theme
 import sys
 from openpyxl import Workbook, load_workbook
 from apps.utils import ip_mask_to_cidr # Import the new utility
+from logging.handlers import TimedRotatingFileHandler
 
-# Create logs directory if it doesn't exist
-os.makedirs('logs', exist_ok=True)
-
-# Configure rich console with custom theme
-custom_theme = Theme({
-    "info": "green",
-    "warning": "yellow",
-    "error": "orange1",
-    "debug": "red"
-})
-console = Console(theme=custom_theme)
-
-# Configure logging with both file and rich console handlers
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        # Rich console handler
-        RichHandler(
-            console=console,
-            show_path=False,
-            rich_tracebacks=True,
-            tracebacks_show_locals=True,
-            markup=True
-        ),
-        # File handler
-        logging.FileHandler(
-            filename='logs/cisco_parser.log',
-            mode='a',  # Append mode
-            encoding='utf-8'
-        )
-    ]
-)
-
+# Get module logger
 logger = logging.getLogger(__name__)
-
 
 class CiscoConfigParser:
     """Base class for Cisco configuration parsers"""
@@ -285,12 +248,12 @@ class CiscoACLParser(CiscoConfigParser):
                     line_number += 1
                     logger.debug(f"Processing line {line_number} of access-list {acl_id} - {line}")
 
-                    # Create entry
+                    # Create entry with default values
                     entry = {
                         'Line': line_number,
                         'Number': acl_id,
                         'Action': parts[2],
-                        'Protocol': parts[3],
+                        'Protocol': parts[3] if len(parts) > 3 else '',
                         'Src-IP': '',
                         'Src-Protocol': '',
                         'Dst-IP': '',
@@ -298,21 +261,31 @@ class CiscoACLParser(CiscoConfigParser):
                         'Remark': ' | '.join(current_remarks)
                     }
 
+                    # Handle special case of "permit any" or "deny any"
+                    if len(parts) == 4 and parts[3] == 'any':
+                        entry['Src-IP'] = 'any'
+                        entry['Dst-IP'] = 'any'
+                        if acl_id not in self.acls:
+                            self.acls[acl_id] = []
+                        self.acls[acl_id].append(entry)
+                        continue
+
                     # Parse source
                     idx = 4
-                    if parts[idx] == 'host':
-                        entry['Src-IP'] = f"{parts[idx + 1]}/32"
-                        idx += 2
-                    elif parts[idx] == 'any':
-                        entry['Src-IP'] = 'any'
-                        idx += 1
-                    else:
-                        if idx + 1 < len(parts) and re.match(r'\d+\.\d+\.\d+\.\d+', parts[idx + 1]):
-                            entry['Src-IP'] = self._convert_wildcard_to_cidr(parts[idx], parts[idx + 1])
+                    if idx < len(parts):
+                        if parts[idx] == 'host':
+                            entry['Src-IP'] = f"{parts[idx + 1]}/32"
                             idx += 2
-                        else:
-                            entry['Src-IP'] = parts[idx]
+                        elif parts[idx] == 'any':
+                            entry['Src-IP'] = 'any'
                             idx += 1
+                        else:
+                            if idx + 1 < len(parts) and re.match(r'\d+\.\d+\.\d+\.\d+', parts[idx + 1]):
+                                entry['Src-IP'] = self._convert_wildcard_to_cidr(parts[idx], parts[idx + 1])
+                                idx += 2
+                            else:
+                                entry['Src-IP'] = parts[idx]
+                                idx += 1
 
                     # Parse destination
                     if idx < len(parts):
@@ -598,6 +571,14 @@ class CiscoInterfaceParser(CiscoConfigParser):
                 # Determine type early
                 interface_type = self._determine_type(normalized_name)
 
+                # Extract port-channel number if this is a port-channel interface
+                port_channel_num = ""
+                if interface_type == "port-channel":
+                    match = re.search(r'port-channel(\d+)', normalized_name, re.IGNORECASE)
+                    if match:
+                        port_channel_num = match.group(1)
+                        logger.debug(f"    Found port-channel number: {port_channel_num}")
+
                 # Initialize interface dictionary using normalized name
                 self.interfaces[normalized_name] = {
                     "if_name": normalized_name,
@@ -607,7 +588,7 @@ class CiscoInterfaceParser(CiscoConfigParser):
                     "status": "",
                     "reason": "",
                     "speed": "",
-                    "port_channel": "",
+                    "port_channel": port_channel_num,  # Set port-channel number if found
                     "description": "",
                     "ip_cidr": "",
                     "allowed_trunks": "" # Initialize allowed_trunks
@@ -1171,9 +1152,9 @@ def main():
                         help="Enable debug logging")
     args = parser.parse_args()
 
-    # Set logging level based on debug flag
-    if args.debug:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # Set up logging with debug mode if specified
+    setup_logging(args.debug)
+    logger = logging.getLogger(__name__)
 
     try:
         # If show-tech is provided, process that file directly
@@ -1192,7 +1173,7 @@ def main():
                     break
                 elif choice == 'all':
                     for file_info in cisco_files:
-                        print(f"\nProcessing {file_info['filename']}...")
+                        logger.info(f"\nProcessing {file_info['filename']}...")
                         process_file(file_info['filename'], args.type, args.display)
                 else:
                     try:
@@ -1201,19 +1182,19 @@ def main():
                         if file_info:
                             process_file(file_info['filename'], args.type, args.display)
                         else:
-                            print(f"Invalid ID: {file_id}")
+                            logger.error(f"Invalid ID: {file_id}")
                     except ValueError:
-                        print("Invalid selection")
+                        logger.error("Invalid selection")
 
             except KeyboardInterrupt:
-                print("\nOperation cancelled by user. Exiting...")
+                logger.info("\nOperation cancelled by user. Exiting...")
                 break
 
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user. Exiting...")
+        logger.info("\nOperation cancelled by user. Exiting...")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Error processing show tech file: {e}")
+        logger.error(f"Error processing show tech file: {e}", exc_info=True)
         raise
 
 

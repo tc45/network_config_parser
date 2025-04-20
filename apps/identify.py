@@ -1,32 +1,55 @@
+"""
+Device type identification module.
+Identifies the type of network device from configuration files.
+"""
+
+import re
 import logging
+from typing import Optional
 
-def identify_device_type(file_path):
-    """Identify the device type based on the file content."""
+logger = logging.getLogger(__name__)
+
+def identify_device_type(filepath: str) -> str:
+    """
+    Identify the type of device from a configuration file.
+    Does a quick scan of the file looking for identifying markers.
+    
+    Args:
+        filepath: Path to the configuration file
+    
+    Returns:
+        str: Device type ("Cisco IOS", "Cisco NXOS", "Cisco ASA", "Palo Alto", or "Unknown")
+    """
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.readlines()
-
-        is_asa = False
-        is_ios = False
-
-        for line in content:
-            # Check for ASA markers
-            if "Cisco Adaptive Security Appliance Software Version" in line or "Hardware:   ASA" in line:
-                is_asa = True
-                break
-            # Check for IOS markers
-            if "Cisco IOS XE Software" in line or "Cisco IOS Software" in line:
-                is_ios = True
-                break
-
-        if is_asa:
-            return 'Cisco ASA'
-        elif is_ios:
-            return 'Cisco IOS'
-        else:
-            # Fallback or default if no specific markers found
-            logging.warning(f"Could not definitively identify device type for {file_path}. Defaulting to Unknown.")
-            return 'Unknown' # Or potentially 'Cisco ASA' as a default if preferred
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            # Read first 1000 lines or until EOF
+            content = ''.join(f.readline() for _ in range(1000))
+            
+            # Check for Palo Alto XML format
+            if '<?xml' in content and any(x in content for x in ['<config', '<show']):
+                if 'panos' in content.lower():
+                    return "Palo Alto"
+            
+            # Check for ASA
+            if any(x in content for x in ['ASA Version', 'PIX Version', 'Cisco Adaptive Security Appliance']):
+                return "Cisco ASA"
+            
+            # Check for Nexus
+            if any(x in content for x in ['NX-OS', 'Nexus']):
+                return "Cisco NXOS"
+            
+            # Check for IOS
+            if any(x in content for x in ['IOS Software', 'Cisco IOS Software']):
+                return "Cisco IOS"
+            
+            # If no clear markers found, try to infer from command output format
+            if 'show running-config' in content or 'show startup-config' in content:
+                # Looks like Cisco, but not sure which type
+                # Default to IOS as it's most common
+                return "Cisco IOS"
+            
+            return "Unknown"
+            
     except Exception as e:
-        logging.error(f"Error reading or processing file {file_path}: {e}")
-        return 'Error' 
+        logger.error(f"Error identifying device type for {filepath}: {e}")
+        return "Unknown" 
