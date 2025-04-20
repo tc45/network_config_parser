@@ -4,7 +4,10 @@ import datetime
 import logging
 from tabulate import tabulate
 from apps.asa_parser import AsaParser
+from apps.cisco_if_parser import CiscoInterfaceParser
 from apps.netmiko_util import NetmikoUtil
+from apps.identify import identify_device_type
+from apps.exporter import export_data_to_excel
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -13,12 +16,6 @@ def get_files_in_input_directory():
     """Retrieve a list of files in the input directory."""
     input_dir = 'input'
     return [f for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))]
-
-def identify_device_type(file_path):
-    """Identify the device type based on the file content."""
-    # Placeholder logic for identifying device type
-    # For now, assume all files are Cisco ASA
-    return 'Cisco ASA'
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -37,6 +34,10 @@ def main():
 
     # Configure logging level based on debug argument
     logging_level = logging.DEBUG if args.debug else logging.INFO
+    # Update basicConfig to ensure handler changes take effect if called multiple times
+    # Remove existing handlers before adding new ones
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
     logging.basicConfig(level=logging_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
     # Ensure input and output directories exist
@@ -46,7 +47,7 @@ def main():
         os.makedirs('output')
 
     # Initialize the ASA parser
-    asa_parser = AsaParser()
+    # asa_parser = AsaParser() # Parser initialization moved inside the loop
 
     if args.use_netmiko:
         # Use Netmiko to connect to the device
@@ -94,12 +95,12 @@ def main():
         selected_option = input("Enter the selection number of the files you want to parse, or 'Parse All': ").strip()
 
         if selected_option.lower() == 'parse all':
-            selected_files = list(file_device_map.keys())
+            selected_indices = list(range(len(file_device_map)))
         else:
             try:
                 selected_index = int(selected_option) - 1
-                if selected_index < len(file_device_map):
-                    selected_files = [list(file_device_map.keys())[selected_index]]
+                if 0 <= selected_index < len(file_device_map):
+                    selected_indices = [selected_index]
                 else:
                     logging.error("Invalid selection.")
                     return
@@ -107,22 +108,33 @@ def main():
                 logging.error("Invalid input. Please enter a number or 'Parse All'.")
                 return
 
-        for file in selected_files:
+        # Get the list of files and their types based on selection
+        selected_files_info = [(list(file_device_map.keys())[i], list(file_device_map.values())[i]) for i in selected_indices]
+
+        for file, device_type in selected_files_info:
             file_path = os.path.join('input', file)
             try:
+                parser = None
+                if device_type == 'Cisco ASA':
+                    parser = AsaParser()
+                elif device_type == 'Cisco IOS':
+                    parser = CiscoInterfaceParser(file_path)
+                else:
+                    logging.warning(f"Skipping file {file} due to unknown or error state device type: {device_type}")
+                    continue
+
                 # Parse the input file
-                parsed_data = asa_parser.parse_file(file_path)
+                parsed_data = parser.parse_file(file_path)
 
-                # Determine output file name
-                hostname = "default_hostname"  # Placeholder for hostname extraction logic
-                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-                output_file_name = f"{hostname}_{timestamp}.xlsx"
-                output_path = os.path.join('output', output_file_name)
+                # Get hostname from parser
+                hostname = parser.get_hostname()
 
-                # Export to Excel
-                asa_parser.export_to_excel(parsed_data, output_path)
+                # Export using the dedicated exporter function
+                export_data_to_excel(parsed_data, 'output', hostname)
+
             except Exception as e:
-                logging.error(f"An error occurred while processing {file}: {e}")
+                # Log the full traceback for better debugging
+                logging.error(f"An error occurred while processing {file}: {e}", exc_info=True)
 
 if __name__ == '__main__':
     main()

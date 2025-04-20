@@ -15,6 +15,9 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 class AsaParser:
     """Parser for Cisco ASA configuration files."""
 
+    def __init__(self):
+        self.hostname = "unknown" # Initialize hostname
+
     def parse_file(self, file_path):
         """Parse the ASA configuration file."""
         try:
@@ -35,7 +38,9 @@ class AsaParser:
             if self.is_running_config(config_data):
                 logging.info("Detected running configuration. Using CiscoConfParse.")
                 running_config_parser = AsaRunningConfigParser(config_data)
-                return running_config_parser.parse()
+                parsed_data = running_config_parser.parse()
+                self.hostname = running_config_parser.get_hostname() # Get hostname from sub-parser
+                return parsed_data
             else:
                 logging.debug("Splitting configuration into sections")
                 sections = self.split_config_into_sections(config_data)
@@ -85,96 +90,9 @@ class AsaParser:
             logging.error(f"Failed to parse section {section_name}: {e}")
             return None
 
-    def export_to_excel(self, data, output_path):
-        """
-        Export parsed data to an Excel file using openpyxl.
-
-        Args:
-            data (dict): Parsed configuration data
-            output_path (str): Base path for output file
-        """
-        try:
-            workbook = openpyxl.Workbook()
-
-            # Get hostname from general data if available
-            hostname = "default"
-            if 'general' in data and data['general']:
-                hostname = data['general'][0].get('Hostname', 'default')
-
-            # Create timestamp
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-            # Modify output path to include hostname
-            output_dir = os.path.dirname(output_path)
-            output_filename = f"{hostname}_{timestamp}.xlsx"
-            final_output_path = os.path.join(output_dir, output_filename)
-
-            # Create sheets and add data
-            for content_type, content_data in data.items():
-                if not content_data:
-                    continue
-
-                # Create a new sheet for each content type
-                sheet = workbook.create_sheet(title=content_type.capitalize())
-                headers = self.get_headers(content_type, content_data)
-                sheet.append(headers)
-
-                # Append data rows
-                for item in content_data:
-                    if isinstance(item, dict):
-                        row = [item.get(header, '') for header in headers]
-                    elif isinstance(item, (list, tuple)):
-                        row = item
-                    else:
-                        # If item is a string or other type, wrap it in a list
-                        row = [item]
-                    sheet.append(row)
-
-                # Create a table
-                table_ref = f"A1:{get_column_letter(len(headers))}{len(content_data) + 1}"
-                table = Table(displayName=f"{content_type.capitalize()}Table", ref=table_ref)
-                style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False,
-                                       showLastColumn=False, showRowStripes=True, showColumnStripes=True)
-                table.tableStyleInfo = style
-                sheet.add_table(table)
-
-            # Remove the default sheet created by openpyxl
-            if 'Sheet' in workbook.sheetnames:
-                del workbook['Sheet']
-
-            # Save the workbook with the new filename
-            workbook.save(final_output_path)
-            logging.info(f"Data exported to {final_output_path}")
-
-        except Exception as e:
-            logging.error(f"Failed to export data to Excel: {e}")
-            raise
-
-    def get_headers(self, content_type, content_data):
-        """Determine headers for the Excel sheet based on content type."""
-        if content_type == 'general':
-            return ['Hostname', 'Version', '# Interfaces', '# Port Channels',
-                    'Boot Command', 'Timezone', 'DNS Servers', 'DNS Name',
-                    '# Objects', '# Object-groups', '# Access List',
-                    '# NAT', '# Crypto Tunnels']
-        elif content_type == 'routes':
-            return ['Interface', 'Destination Network', 'Destination Subnet',
-                    'Next Hop', 'Admin Distance']
-        elif content_type == 'interfaces':
-            return ['Interface', 'Nameif', 'Security Level', 'IP Address', 'Subnet Mask', 'CIDR', 'Standby',
-                    'Full Parsed Line']
-        elif content_type == 'access_lists':
-            return ['ACL Name', 'Line Number', 'Type', 'Action', 'Protocol', 'Source', 'Source Port', 'Destination',
-                    'Destination Port', 'Log Status', 'Inactive', 'Remark', 'Full Parsed Line']
-        elif content_type == 'objects':
-            return ['Name', 'Object Type', 'Object-Group Protocol', 'Type', 'Value', 'Description', 'Full Parsed Line']
-        elif content_type == 'nat_rules':
-            return ['Source', 'Destination', 'Translation', 'Options', 'Full Parsed Line']
-        elif content_type == 'crypto_maps':
-            return ['Line Number', 'Map Name', 'Match Address', 'Peer', 'IKE Version', 'Transform Set',
-                    'Applied Interface', 'Full Parsed Line']
-        else:
-            return list(content_data[0].keys()) if isinstance(content_data[0], dict) else [f"{content_type}_data"]
+    def get_hostname(self):
+        """Return the hostname found during parsing."""
+        return self.hostname
 
 
 class AsaRunningConfigParser:
@@ -202,6 +120,7 @@ class AsaRunningConfigParser:
         self.config_data = config_data
         self.objects_data = {}  # Dictionary to store parsed objects
         self.access_lists = {}  # Dictionary to store parsed access lists, organized by ACL name
+        self.hostname = "unknown" # Initialize hostname
 
     def parse(self):
         """Parse the running configuration."""
@@ -211,6 +130,10 @@ class AsaRunningConfigParser:
 
             # Extract general information
             parsed_data['general'] = self.parse_general_info(parse)
+            # Store hostname found in general info
+            if parsed_data['general']:
+                 self.hostname = parsed_data['general'][0].get('Hostname', 'unknown')
+
             logging.debug(f"General Info: {parsed_data['general']}")
 
             # Extract interface configurations
@@ -700,3 +623,7 @@ class AsaRunningConfigParser:
         except IndexError as e:
             logging.error(f"Failed to parse crypto map: {crypto.text} - {e}")
             return {'Full Parsed Line': crypto.text}
+
+    def get_hostname(self):
+        """Return the hostname found during parsing."""
+        return self.hostname
