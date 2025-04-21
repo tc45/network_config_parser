@@ -2,7 +2,19 @@
 
 """
 Network Configuration Parser - Main entry point
-Handles command line arguments and logging setup for all parsers
+
+This script serves as the main entry point for the Network Configuration Parser tool.
+It provides functionality to:
+- Parse network device configurations from various vendors
+- Set up logging with both file and console output
+- Handle command line arguments
+- Process configuration files and export results
+
+The tool supports multiple device types including:
+- Cisco IOS
+- Cisco NXOS
+- Cisco ASA
+- Palo Alto
 """
 
 import argparse
@@ -19,10 +31,21 @@ from apps.identify import identify_device_type
 
 def setup_logging(debug_mode: bool = False) -> None:
     """
-    Set up logging configuration with both file and console handlers.
+    Set up a comprehensive logging configuration with both file and console handlers.
+    
+    This function configures the logging system with the following features:
+    - Console output with color-coded messages using Rich library
+    - Daily rotating log files stored in the 'logs' directory
+    - Debug mode option for more detailed logging
+    - Custom formatting for both console and file outputs
     
     Args:
-        debug_mode (bool): Whether to enable debug logging
+        debug_mode (bool): When True, enables detailed debug logging messages.
+                          When False, only logs INFO level and above.
+    
+    Example:
+        setup_logging(debug_mode=True)  # Enable debug logging
+        setup_logging()  # Standard logging with INFO level
     """
     # Create logs directory if it doesn't exist
     os.makedirs('logs', exist_ok=True)
@@ -85,7 +108,28 @@ def setup_logging(debug_mode: bool = False) -> None:
     logger.debug("Logging system initialized" + (" with debug mode enabled" if debug_mode else ""))
 
 def get_parser_class(device_type: str):
-    """Get the appropriate parser class based on device type"""
+    """
+    Determine and return the appropriate parser class(es) based on the device type.
+    
+    This function maps network device types to their corresponding parser classes.
+    It dynamically imports the necessary parser modules when needed.
+    
+    Args:
+        device_type (str): The type of network device. Supported values are:
+                          - "Cisco IOS"
+                          - "Cisco NXOS"
+                          - "Cisco ASA"
+                          - "Palo Alto"
+    
+    Returns:
+        tuple: A tuple containing the parser class(es) for the specified device type.
+               Returns None if no parser is available for the device type.
+    
+    Example:
+        parser_classes = get_parser_class("Cisco IOS")
+        if parser_classes:
+            parser = parser_classes[0](config_file)
+    """
     if device_type == "Cisco IOS" or device_type == "Cisco NXOS":
         from apps.cisco_if_parser import CiscoInterfaceParser, CiscoACLParser
         return (CiscoInterfaceParser, CiscoACLParser)
@@ -99,7 +143,30 @@ def get_parser_class(device_type: str):
         return None
 
 def main():
-    """Main entry point for the network configuration parser"""
+    """
+    Main entry point for the network configuration parser application.
+    
+    This function:
+    1. Sets up command line argument parsing for:
+       - Show tech file path (optional)
+       - Display output option
+       - Debug mode
+    2. Initializes logging system
+    3. Processes input files:
+       - From show-tech file if specified
+       - From 'input' directory otherwise
+    4. Provides an interactive menu to:
+       - List available configuration files
+       - Process single or all files
+       - Display results or export to Excel
+    
+    The function handles various error conditions and provides user-friendly
+    feedback through logging.
+    
+    Exit codes:
+        0: Successful execution or user-initiated exit
+        1: Error during execution
+    """
     parser = argparse.ArgumentParser(
         description="Network Configuration Parser - Parse and analyze network device configurations"
     )
@@ -179,7 +246,27 @@ def main():
         sys.exit(1)
 
 def process_file(filepath: str, device_type: str, display: bool) -> None:
-    """Process a single configuration file"""
+    """
+    Process a single network device configuration file.
+    
+    This function handles the complete processing workflow for a configuration file:
+    1. Identifies and loads appropriate parser(s) for the device type
+    2. Parses the configuration file
+    3. Extracts hostname and other relevant data
+    4. Either displays the results in console tables or exports to Excel
+    
+    Args:
+        filepath (str): Path to the configuration file to process
+        device_type (str): Type of network device (e.g., "Cisco IOS", "Palo Alto")
+        display (bool): When True, displays results in console tables
+                       When False, exports results to Excel files
+    
+    Raises:
+        Exception: If there's an error during file processing, with detailed logging
+    
+    Example:
+        process_file("config.txt", "Cisco IOS", display=True)
+    """
     logger = logging.getLogger(__name__)
     logger.info(f"Processing {device_type} configuration: {filepath}")
 

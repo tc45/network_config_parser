@@ -1,3 +1,22 @@
+"""
+Cisco ASA Configuration Parser Module
+
+This module provides comprehensive parsing capabilities for Cisco ASA (Adaptive
+Security Appliance) configurations. It can handle both running configurations
+and show-tech outputs, extracting detailed information about security policies,
+network objects, and device settings.
+
+Key Features:
+- Parses ASA running configurations and show-tech outputs
+- Extracts access lists, network objects, and NAT rules
+- Handles interface configurations and routing information
+- Supports crypto map configurations for VPN
+- Provides detailed logging and error handling
+
+The module uses both CiscoConfParse2 for structured parsing and ntc-templates
+for parsing show command outputs.
+"""
+
 import pandas as pd
 import logging
 from ciscoconfparse2 import CiscoConfParse
@@ -13,17 +32,78 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 
 
 class AsaParser:
-    """Parser for Cisco ASA configuration files."""
+    """
+    Main parser class for Cisco ASA configuration files.
+    
+    This class serves as the primary entry point for parsing ASA configurations.
+    It can handle both running configurations and show-tech outputs, automatically
+    detecting the type of input and using appropriate parsing strategies.
+    
+    Features:
+        - Automatic detection of configuration type
+        - Section-based parsing for show-tech outputs
+        - Comprehensive parsing for running configurations
+        - Hostname extraction and tracking
+    
+    Attributes:
+        show_tech_file (str): Path to the configuration file
+        hostname (str): Device hostname (defaults to "unknown")
+        parsed_data (dict): Storage for parsed configuration data
+    
+    Example:
+        >>> parser = AsaParser("asa_config.txt")
+        >>> data = parser.parse_file()
+        >>> print(f"Parsed configuration from {parser.get_hostname()}")
+    """
 
     def __init__(self, show_tech_file: str):
-        """Initialize the ASA parser with the show tech file path."""
+        """
+        Initialize the ASA parser.
+        
+        Args:
+            show_tech_file (str): Path to the ASA configuration or show-tech file.
+                                 The file will not be parsed until parse_file() is called.
+        
+        Note:
+            The constructor only stores the file path - actual parsing is deferred
+            until parse_file() is called to allow for better error handling.
+        """
         self.show_tech_file = show_tech_file
         self.hostname = "unknown"
         self.parsed_data = {}
-        # Don't parse in init, wait for explicit parse_file call
 
     def parse_file(self, file_path=None):
-        """Parse the ASA configuration file."""
+        """
+        Parse the ASA configuration file.
+        
+        This method reads and parses the configuration file, automatically detecting
+        whether it's a running configuration or show-tech output and applying the
+        appropriate parsing strategy.
+        
+        Args:
+            file_path (str, optional): Override path to the configuration file.
+                                     If not provided, uses the path from __init__.
+        
+        Returns:
+            dict: Parsed configuration data organized by sections:
+                - interfaces: Interface configurations
+                - access_lists: Access control lists
+                - objects: Network and service objects
+                - nat_rules: NAT configurations
+                - crypto_maps: VPN configurations
+                
+        Raises:
+            FileNotFoundError: If the configuration file doesn't exist
+            Exception: For other parsing errors
+        
+        Example:
+            >>> parser = AsaParser("asa_config.txt")
+            >>> try:
+            ...     data = parser.parse_file()
+            ...     print(f"Found {len(data.get('access_lists', []))} ACLs")
+            ... except FileNotFoundError:
+            ...     print("Configuration file not found")
+        """
         try:
             # Use the file_path if provided, otherwise use the one from init
             file_path = file_path or self.show_tech_file
@@ -40,7 +120,26 @@ class AsaParser:
             raise
 
     def parse_data(self, config_data):
-        """Parse ASA configuration data from a string."""
+        """
+        Parse ASA configuration data from a string.
+        
+        This method determines the type of configuration (running-config or
+        show-tech) and delegates to the appropriate parser. For running configs,
+        it uses CiscoConfParse for structured parsing. For show-tech outputs,
+        it splits the data into sections and parses each separately.
+        
+        Args:
+            config_data (str): Raw configuration data to parse
+        
+        Returns:
+            dict: Parsed configuration data organized by sections
+        
+        Notes:
+            - Automatically detects configuration type
+            - Uses different parsing strategies based on content
+            - Preserves hostname information when found
+            - Handles parsing errors for individual sections
+        """
         try:
             if self.is_running_config(config_data):
                 logging.info("Detected running configuration. Using CiscoConfParse.")
@@ -61,12 +160,49 @@ class AsaParser:
             raise
 
     def is_running_config(self, config_data):
-        """Determine if the configuration data is a running configuration."""
+        """
+        Determine if the configuration data is a running configuration.
+        
+        This method uses heuristics to identify whether the provided data
+        is an ASA running configuration by looking for specific markers.
+        
+        Args:
+            config_data (str): Configuration data to analyze
+        
+        Returns:
+            bool: True if the data appears to be a running configuration,
+                 False otherwise
+        
+        Note:
+            Currently checks for "ASA Version" and "interface" keywords
+            as indicators of a running configuration.
+        """
         # Simple heuristic: check for common running-config markers
         return "ASA Version" in config_data and "interface" in config_data
 
     def split_config_into_sections(self, config_data):
-        """Split the configuration into sections."""
+        """
+        Split the configuration into logical sections.
+        
+        This method breaks down a show-tech output into its component sections
+        based on command output boundaries. Each section corresponds to a
+        specific show command output.
+        
+        Args:
+            config_data (str): Raw configuration data to split
+        
+        Returns:
+            dict: Configuration sections:
+                {
+                    'interfaces': Interface section content,
+                    'access_lists': ACL section content,
+                    ...
+                }
+        
+        Note:
+            Currently extracts 'interfaces' and 'access_lists' sections,
+            but can be extended for additional sections.
+        """
         sections = {
             'interfaces': self.extract_section(config_data, 'interface'),
             'access_lists': self.extract_section(config_data, 'access-list'),
@@ -76,7 +212,27 @@ class AsaParser:
         return sections
 
     def extract_section(self, config_data, section_keyword):
-        """Extract a specific section from the configuration."""
+        """
+        Extract a specific section from the configuration.
+        
+        This method extracts all lines belonging to a particular configuration
+        section, starting from the line containing the section keyword until
+        a blank line is encountered.
+        
+        Args:
+            config_data (str): Complete configuration data
+            section_keyword (str): Keyword that starts the section
+                                 (e.g., 'interface', 'access-list')
+        
+        Returns:
+            str: Extracted section content, with lines joined by newlines
+        
+        Example:
+            >>> content = "interface GigabitEthernet0/1\\n ip address 192.168.1.1\\n\\n"
+            >>> section = parser.extract_section(content, 'interface')
+            >>> print(section)
+            'interface GigabitEthernet0/1\\n ip address 192.168.1.1'
+        """
         section_lines = []
         capture = False
         for line in config_data.splitlines():
@@ -89,7 +245,27 @@ class AsaParser:
         return '\n'.join(section_lines)
 
     def parse_section(self, section_name, section_data):
-        """Parse a specific section of the configuration."""
+        """
+        Parse a specific section of the configuration.
+        
+        This method uses ntc-templates to parse structured data from a
+        configuration section. It handles the conversion from raw configuration
+        text to structured data format.
+        
+        Args:
+            section_name (str): Name of the section being parsed
+                              (e.g., 'interfaces', 'access_lists')
+            section_data (str): Raw section content to parse
+        
+        Returns:
+            list: Parsed section data as a list of dictionaries,
+                 or None if parsing fails
+        
+        Notes:
+            - Uses ntc-templates for parsing
+            - Returns None and logs error if parsing fails
+            - Specific to Cisco ASA platform
+        """
         try:
             parsed_section = parse_output(platform='cisco_asa', command=f'show {section_name}', data=section_data)
             return parsed_section
@@ -98,31 +274,62 @@ class AsaParser:
             return None
 
     def get_hostname(self):
-        """Return the hostname found during parsing."""
+        """
+        Get the hostname of the ASA device.
+        
+        Returns:
+            str: Device hostname if found during parsing,
+                 "unknown" if not found or not yet parsed
+        """
         return self.hostname
 
 
 class AsaRunningConfigParser:
     """
-    Parser for Cisco ASA running configurations using CiscoConfParse.
-
-    This class handles the parsing of ASA configuration files, with special focus on:
-    - Access Lists (stored in self.access_lists)
-    - Network Objects (stored in self.objects_data)
-    - Interfaces, NAT rules, and Crypto maps
-
+    Specialized parser for Cisco ASA running configurations.
+    
+    This class provides detailed parsing capabilities for ASA running
+    configurations using CiscoConfParse. It extracts and organizes various
+    configuration elements including ACLs, objects, interfaces, and more.
+    
+    Features:
+        - Parses access control lists (ACLs)
+        - Extracts network and service objects
+        - Handles interface configurations
+        - Processes NAT rules
+        - Parses crypto maps for VPN
+        - Maintains relationships between objects and their usage
+    
     Attributes:
-        config_data (str): Raw configuration data to be parsed
-        objects_data (dict): Dictionary of parsed network/service objects, keyed by object name
-        access_lists (dict): Dictionary of parsed access lists, keyed by ACL name
+        config_data (str): Raw configuration to parse
+        objects_data (dict): Parsed network/service objects by name
+        access_lists (dict): Parsed ACLs organized by ACL name
+        hostname (str): Device hostname
+    
+    Example:
+        >>> with open('asa.cfg') as f:
+        ...     config = f.read()
+        >>> parser = AsaRunningConfigParser(config)
+        >>> data = parser.parse()
+        >>> print(f"Found {len(data['access_lists'])} ACLs")
+    
+    Notes:
+        - Uses CiscoConfParse for structured parsing
+        - Maintains object references for ACL analysis
+        - Handles complex configurations with nested objects
+        - Provides detailed parsing of security policies
     """
 
     def __init__(self, config_data):
         """
-        Initialize the parser with configuration data.
-
+        Initialize the running configuration parser.
+        
         Args:
-            config_data (str): Raw configuration data to be parsed
+            config_data (str): Raw ASA running configuration to parse
+        
+        Note:
+            The constructor only stores the configuration - actual parsing
+            is deferred until the parse() method is called.
         """
         self.config_data = config_data
         self.objects_data = {}  # Dictionary to store parsed objects

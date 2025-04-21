@@ -1,7 +1,22 @@
 """
-Parser for Palo Alto configuration files.
-Allows viewing nested dictionary structure at configurable depth levels.
+Palo Alto Configuration Parser Module
+
+This module provides comprehensive parsing capabilities for Palo Alto Networks
+firewall configurations in XML format. It converts the hierarchical XML structure
+into a more accessible dictionary format and extracts key configuration elements.
+
+Key Features:
+- Parses XML configuration files from Palo Alto firewalls
+- Extracts interface configurations, security policies, and NAT rules
+- Handles address and service objects
+- Provides nested dictionary viewing capabilities
+- Supports hostname extraction
+- Includes detailed logging and error handling
+
+The module uses ElementTree for XML parsing and provides utilities for
+exploring the configuration hierarchy at various depth levels.
 """
+
 import xml.etree.ElementTree as ET
 import logging
 from typing import Dict, Any, Optional
@@ -11,22 +26,70 @@ from tabulate import tabulate
 logger = logging.getLogger(__name__)
 
 class PaloAltoParser:
-    """Parser for Palo Alto configuration files"""
+    """
+    Parser for Palo Alto Networks firewall configurations.
+    
+    This class provides functionality to parse and analyze Palo Alto firewall
+    configurations in XML format. It converts the XML hierarchy into a dictionary
+    structure and extracts key configuration elements into structured data.
+    
+    Features:
+        - XML to dictionary conversion
+        - Interface configuration parsing
+        - Security policy extraction
+        - NAT policy parsing
+        - Object (address/service) handling
+        - Hostname identification
+    
+    Attributes:
+        config_dict (Dict[str, Any]): Parsed configuration in dictionary format
+        hostname (str): Device hostname (defaults to "unknown")
+    
+    Example:
+        >>> parser = PaloAltoParser()
+        >>> config = parser.parse_file("palo_alto_config.xml")
+        >>> print(f"Found {len(config['Security Policies'])} security policies")
+    """
 
     def __init__(self):
-        """Initialize the Palo Alto parser"""
+        """
+        Initialize the Palo Alto parser.
+        
+        Creates an empty configuration dictionary and sets default hostname.
+        The actual parsing is deferred until parse_file() is called.
+        """
         self.config_dict: Dict[str, Any] = {}
         self.hostname = "unknown"
 
     def parse_file(self, filepath: str) -> Dict[str, Any]:
         """
-        Parse a Palo Alto configuration file.
-
+        Parse a Palo Alto configuration file in XML format.
+        
+        This method reads an XML configuration file, converts it to a dictionary
+        structure, and extracts key configuration elements into organized sections.
+        
         Args:
-            filepath: Path to the configuration file
-
+            filepath (str): Path to the XML configuration file
+        
         Returns:
-            Dict containing the parsed data
+            Dict[str, Any]: Parsed configuration data organized by sections:
+                - Interfaces: Network interface configurations
+                - Security Policies: Security rules and policies
+                - NAT Policies: Network address translation rules
+                - Objects: Address and service objects
+        
+        Raises:
+            ET.ParseError: If XML parsing fails
+            Exception: For other processing errors
+        
+        Example:
+            >>> parser = PaloAltoParser()
+            >>> try:
+            ...     config = parser.parse_file("config.xml")
+            ...     for interface in config['Interfaces']:
+            ...         print(f"Interface: {interface['Name']}")
+            ... except ET.ParseError:
+            ...     print("Invalid XML file")
         """
         try:
             logger.info(f"Parsing Palo Alto configuration file: {filepath}")
@@ -53,7 +116,18 @@ class PaloAltoParser:
             raise
 
     def _extract_hostname(self) -> None:
-        """Extract hostname from the configuration"""
+        """
+        Extract hostname from the configuration dictionary.
+        
+        Attempts to find the hostname in the device-group or system settings
+        section of the configuration. Sets the hostname attribute if found,
+        otherwise keeps the default "unknown" value.
+        
+        Notes:
+            - Looks in devices/entry/hostname path
+            - Logs warning if hostname cannot be extracted
+            - Keeps existing hostname if extraction fails
+        """
         try:
             # Try to find hostname in device-group or system settings
             if 'devices' in self.config_dict:
@@ -65,7 +139,19 @@ class PaloAltoParser:
             logger.warning(f"Could not extract hostname: {e}")
 
     def _parse_sections(self) -> Dict[str, Any]:
-        """Parse configuration sections into structured data"""
+        """
+        Parse configuration sections into structured data.
+        
+        This method orchestrates the parsing of various configuration sections,
+        calling specific parsers for each section type and combining the results.
+        
+        Returns:
+            Dict[str, Any]: Parsed configuration data with sections:
+                - Interfaces: List of interface configurations
+                - Security Policies: List of security rules
+                - NAT Policies: List of NAT rules
+                - Objects: List of address and service objects
+        """
         parsed_data = {
             'Interfaces': self._parse_interfaces(),
             'Security Policies': self._parse_security_policies(),
@@ -75,7 +161,31 @@ class PaloAltoParser:
         return parsed_data
 
     def _parse_interfaces(self) -> list:
-        """Parse interface configurations"""
+        """
+        Parse network interface configurations.
+        
+        Extracts interface configurations from the network section of the
+        configuration, including interface names, types, IP addresses,
+        security zones, and VLAN assignments.
+        
+        Returns:
+            list: List of dictionaries containing interface details:
+                [
+                    {
+                        'Name': Interface name,
+                        'Type': Interface type,
+                        'IP': IP address/subnet,
+                        'Zone': Security zone,
+                        'VLAN': VLAN ID
+                    },
+                    ...
+                ]
+        
+        Notes:
+            - Handles missing or incomplete interface configurations
+            - Returns empty list if no interfaces found
+            - Logs errors during parsing
+        """
         interfaces = []
         try:
             # Extract interface configurations
@@ -96,7 +206,33 @@ class PaloAltoParser:
         return interfaces
 
     def _parse_security_policies(self) -> list:
-        """Parse security policies"""
+        """
+        Parse security policy rules.
+        
+        Extracts security policies from the configuration, including rule names,
+        actions, zones, and other security parameters.
+        
+        Returns:
+            list: List of dictionaries containing security policy details:
+                [
+                    {
+                        'Name': Rule name,
+                        'Action': Allow/Deny/Drop,
+                        'Source Zone': Source security zone,
+                        'Destination Zone': Destination security zone,
+                        'Source': Source addresses/groups,
+                        'Destination': Destination addresses/groups,
+                        'Service': Service/application,
+                        'Application': Application ID
+                    },
+                    ...
+                ]
+        
+        Notes:
+            - Processes both intrazone and interzone policies
+            - Returns empty list if no policies found
+            - Logs errors during parsing
+        """
         policies = []
         try:
             if 'policies' in self.config_dict:
@@ -118,7 +254,30 @@ class PaloAltoParser:
         return policies
 
     def _parse_nat_policies(self) -> list:
-        """Parse NAT policies"""
+        """
+        Parse NAT (Network Address Translation) policies.
+        
+        Extracts NAT rules from the configuration, including source NAT,
+        destination NAT, and static NAT configurations.
+        
+        Returns:
+            list: List of dictionaries containing NAT rule details:
+                [
+                    {
+                        'Name': Rule name,
+                        'Source': Original source address,
+                        'Destination': Original destination address,
+                        'Service': Service/port,
+                        'Translation': NAT translation details
+                    },
+                    ...
+                ]
+        
+        Notes:
+            - Handles all NAT rule types (source, destination, static)
+            - Returns empty list if no NAT rules found
+            - Logs errors during parsing
+        """
         nat_rules = []
         try:
             if 'policies' in self.config_dict:
@@ -137,7 +296,31 @@ class PaloAltoParser:
         return nat_rules
 
     def _parse_objects(self) -> list:
-        """Parse address and service objects"""
+        """
+        Parse address and service objects.
+        
+        Extracts network address objects and service objects from the
+        configuration, including both predefined and custom objects.
+        
+        Returns:
+            list: List of dictionaries containing object details:
+                [
+                    {
+                        'Name': Object name,
+                        'Type': 'address' or 'service',
+                        'Value': IP/FQDN for address objects,
+                        'Protocol': Protocol for service objects,
+                        'Port': Port for service objects
+                    },
+                    ...
+                ]
+        
+        Notes:
+            - Handles both IPv4 and IPv6 address objects
+            - Processes FQDN and IP range objects
+            - Returns empty list if no objects found
+            - Logs errors during parsing
+        """
         objects = []
         try:
             if 'objects' in self.config_dict:
@@ -165,7 +348,31 @@ class PaloAltoParser:
 
     @staticmethod
     def _xml_to_dict(element: ET.Element) -> Dict[str, Any]:
-        """Convert XML to dictionary recursively"""
+        """
+        Convert XML element to dictionary recursively.
+        
+        This method converts an XML element and all its children into a
+        nested dictionary structure, preserving attributes and text content.
+        
+        Args:
+            element (ET.Element): XML element to convert
+        
+        Returns:
+            Dict[str, Any]: Dictionary representation of the XML element:
+                - Attributes become dictionary key-value pairs
+                - Child elements become nested dictionaries
+                - Multiple children with same tag become lists
+                - Element text is stored under 'text' key if present
+        
+        Example:
+            XML: <interface name="eth1"><ip>192.168.1.1</ip></interface>
+            Dict: {
+                'interface': {
+                    'name': 'eth1',
+                    'ip': '192.168.1.1'
+                }
+            }
+        """
         result = {}
 
         # Handle attributes if present
@@ -195,20 +402,44 @@ class PaloAltoParser:
         return result
 
     def get_hostname(self) -> str:
-        """Return the hostname found during parsing"""
+        """
+        Get the hostname of the Palo Alto device.
+        
+        Returns:
+            str: Device hostname if found during parsing,
+                 "unknown" if not found or not yet parsed
+        """
         return self.hostname
 
 
 def print_dict_levels(d: Dict[str, Any], current_level: int = 0,
                       max_level: Optional[int] = None, indent: str = ""):
     """
-    Print dictionary structure up to specified number of levels.
-
+    Print a nested dictionary with configurable depth levels.
+    
+    This utility function prints a nested dictionary structure in a hierarchical
+    format, allowing control over the depth of nesting to display. It's particularly
+    useful for exploring complex Palo Alto configurations.
+    
     Args:
-        d: Dictionary to print
-        current_level: Current depth level (used internally for recursion)
-        max_level: Maximum depth level to print
-        indent: Indentation string (used internally for formatting)
+        d (Dict[str, Any]): Dictionary to print
+        current_level (int): Current nesting level (used for recursion)
+        max_level (Optional[int]): Maximum nesting level to print.
+                                 None means print all levels.
+        indent (str): Current indentation string (used for recursion)
+    
+    Example:
+        >>> config = {'network': {'interfaces': {'eth0': {'ip': '192.168.1.1'}}}}
+        >>> print_dict_levels(config, max_level=2)
+        network
+          interfaces
+            eth0: {...}
+    
+    Notes:
+        - Uses indentation to show hierarchy
+        - Shows {...} for truncated nested structures
+        - Handles both dictionary and list values
+        - Recursively processes nested structures
     """
     if max_level is not None and current_level > max_level:
         return
@@ -229,13 +460,32 @@ def print_dict_levels(d: Dict[str, Any], current_level: int = 0,
 
 def get_level_2_items(d: Dict[str, Any]) -> list:
     """
-    Get all items at level 2 of the dictionary.
-
+    Get a list of items at the second level of a nested dictionary.
+    
+    This utility function extracts and formats items from the second level
+    of nesting in a dictionary structure. It's useful for creating menus
+    or summaries of configuration sections.
+    
     Args:
-        d: Dictionary to analyze
-
+        d (Dict[str, Any]): Dictionary to analyze
+    
     Returns:
-        List of level 2 items
+        list: List of tuples containing:
+            - Index number (1-based)
+            - First level key
+            - Second level key
+            - Preview of the value
+    
+    Example:
+        >>> config = {'network': {'interfaces': {'eth0': {}}, 'dns': {'servers': []}}}
+        >>> items = get_level_2_items(config)
+        >>> print(items)
+        [(1, 'network', 'interfaces', '{...}'), (2, 'network', 'dns', '{...}')]
+    
+    Notes:
+        - Only processes dictionary values
+        - Provides a preview of deeper structures
+        - Useful for building interactive menus
     """
     level_2_items = []
     if isinstance(d, dict):
@@ -253,10 +503,30 @@ def get_level_2_items(d: Dict[str, Any]) -> list:
 
 def display_menu(config_dict: Dict[str, Any]) -> None:
     """
-    Display interactive menu for viewing configuration.
-
+    Display an interactive menu for exploring configuration sections.
+    
+    This function creates a user-friendly menu interface for navigating
+    through a Palo Alto configuration dictionary. It shows available
+    sections and allows users to select which parts to explore.
+    
     Args:
-        config_dict: Configuration dictionary to display
+        config_dict (Dict[str, Any]): Configuration dictionary to display
+    
+    Example:
+        >>> config = parse_config("palo_alto.xml")
+        >>> display_menu(config)
+        Available sections:
+        1. network > interfaces
+        2. policies > security
+        3. objects > address
+        ...
+        Enter section number (q to quit):
+    
+    Notes:
+        - Uses tabulate for formatted output
+        - Provides section previews
+        - Supports quit option
+        - Handles invalid input gracefully
     """
     while True:
         # Get level 2 items for display options
@@ -326,7 +596,30 @@ def display_menu(config_dict: Dict[str, Any]) -> None:
 
 def main():
     """
-    Main function to parse Palo Alto config and display structure.
+    Main entry point for the Palo Alto configuration parser.
+    
+    This function provides a command-line interface for parsing and
+    exploring Palo Alto configuration files. It handles file selection,
+    parsing, and interactive exploration of the configuration.
+    
+    Usage:
+        $ python palo_alto.py [config_file]
+    
+    Features:
+        - Command line argument support
+        - Interactive file selection
+        - Configuration exploration menu
+        - Error handling and logging
+    
+    Example:
+        >>> if __name__ == '__main__':
+        ...     main()
+    
+    Notes:
+        - Accepts optional command line argument for config file
+        - Falls back to interactive mode if no file specified
+        - Provides error messages for invalid files
+        - Supports quit option at any point
     """
     # Parse XML file
     tree = ET.parse('input/UNCSO-Panorama-M-200_017607002338.xml')

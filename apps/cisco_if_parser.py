@@ -41,6 +41,8 @@ class CiscoConfigParser:
         self.device_type: Optional[str] = None
         self.parsed_data: Dict = {} # To store parsed results
         self.sections: Dict[str, str] = {} # Store extracted sections
+        self.show_interfaces = None  # Initialize show interfaces
+        self.show_interfaces_brief = None  # Initialize show interfaces brief
 
         # Check if file has already been parsed
         if show_tech_file in self._section_cache:
@@ -75,8 +77,10 @@ class CiscoConfigParser:
 
     def _extract_hostname_from_running_config(self) -> None:
         """Extract hostname specifically from the running-config section."""
+        logger.info("START - Extracting hostname from configuration")
         if not self.running_config:
             logger.warning("Cannot extract hostname, running_config is missing.")
+            logger.info("END - Extracting hostname from configuration (no running config)")
             return
         hostname_pattern = re.compile(r'^hostname\s+(\S+)', re.MULTILINE)
         hostname_match = hostname_pattern.search(self.running_config)
@@ -86,6 +90,7 @@ class CiscoConfigParser:
         else:
             logger.warning("Could not find hostname in running-config")
             self.hostname = "unknown"
+        logger.info(f"END - Extracting hostname: {self.hostname}")
 
     def _determine_device_type_from_running_config(self) -> str:
         """Attempt to determine device type based on running-config content."""
@@ -105,6 +110,7 @@ class CiscoConfigParser:
 
     def _extract_sections(self) -> None:
         """Extract sections based on header patterns like '--- show command ---'."""
+        logger.info("START - Extracting sections from show tech file")
         self.sections = {}
         found_commands = [] # Log commands found
         try:
@@ -156,10 +162,16 @@ class CiscoConfigParser:
                     section_content = content[content_start_pos:next_header_pos].strip()
                     if section_content:  # Only store if we found content
                         self.sections[command] = section_content
-                        logger.info(f"Extracted section: '{command}' ({len(section_content)} chars)")
+                        logger.debug(f"Extracted section: '{command}' ({len(section_content)} chars)")
 
             if not self.sections:
                 logger.warning(f"No sections extracted using header patterns. File might have unexpected format: {self.show_tech_file}")
+
+            # After extracting all sections, populate show interfaces attributes
+            self.show_interfaces = self.sections.get('show interfaces')
+            self.show_interfaces_brief = self.sections.get('show interfaces brief')
+            logger.debug(f"Found show interfaces section: {'Yes' if self.show_interfaces else 'No'}")
+            logger.debug(f"Found show interfaces brief section: {'Yes' if self.show_interfaces_brief else 'No'}")
 
         except FileNotFoundError:
             logger.error(f"Show tech file not found: {self.show_tech_file}")
@@ -169,6 +181,7 @@ class CiscoConfigParser:
             # Don't raise here, allow parsing methods to handle missing sections
 
         logger.info(f"Finished section extraction. Found commands: {found_commands}") # Log all found commands at the end
+        logger.info("END - Extracting sections from show tech file")
 
     def get_hostname(self):
         """Return the hostname found during parsing."""
@@ -190,24 +203,66 @@ class CiscoConfigParser:
 
 
 class CiscoACLParser(CiscoConfigParser):
-    """Parser for Cisco access-list configurations"""
+    """
+    Parser for Cisco Access Control List (ACL) configurations.
+    
+    This class specializes in parsing and analyzing Cisco ACL configurations from
+    show-tech files or running configurations. It can handle both standard and
+    extended ACLs, named and numbered ACLs, and provides detailed information
+    about ACL entries.
+    
+    Features:
+        - Parses both standard and extended ACLs
+        - Handles named and numbered ACLs
+        - Extracts source/destination addresses, ports, and protocols
+        - Identifies permit/deny actions
+        - Supports ACL remarks and descriptions
+    
+    Attributes:
+        acls (Dict[str, List[Dict]]): Parsed ACL data organized by ACL name/number
+    
+    Example:
+        >>> parser = CiscoACLParser("router_config.txt")
+        >>> acl_data = parser.parse_file()
+        >>> for acl_name, entries in acl_data.items():
+        ...     print(f"ACL {acl_name} has {len(entries)} entries")
+    
+    Notes:
+        - ACL parsing happens automatically during initialization
+        - Inherits base functionality from CiscoConfigParser
+        - Returns empty dict if no ACLs are found
+    """
 
     def __init__(self, show_tech_file: str):
-        """Initialize the ACL parser"""
+        """
+        Initialize the ACL parser.
+        
+        Args:
+            show_tech_file (str): Path to the show-tech or configuration file
+                                 containing ACL configurations.
+        
+        Notes:
+            - Calls parent class initialization first
+            - Automatically triggers ACL parsing if running config is available
+            - Initializes empty acls dictionary for storing parsed results
+        """
         super().__init__(show_tech_file)
         self.acls: Dict[str, List[Dict]] = {}
         if self.running_config:
-            self._parse_acls() # Parse ACLs during init
+            self._parse_acls()  # Parse ACLs during init
             # Flatten ACL data for the exporter
             flat_acl_data = [item for sublist in self.acls.values() for item in sublist]
             self.parsed_data['Access Lists'] = flat_acl_data # Use sheet name as key
 
     def _parse_acls(self) -> None:
         """Parse access-list configurations"""
+        logger.info("START - Parsing access-list configurations")
         if not self.running_config:
+            logger.info("END - Parsing access-list configurations (no running config found)")
             return
 
         self.acls = {}  # Reset ACLs dictionary
+        local_hostname = self.get_hostname()
 
         try:
             # First find all unique ACL numbers/names
@@ -227,7 +282,7 @@ class CiscoACLParser(CiscoConfigParser):
             for acl_id in sorted(acl_ids):
                 logger.debug(f"Processing access-list {acl_id}")
                 current_remarks = []
-                line_number = 0
+                line_number = 0  # Reset line number for each ACL
 
                 # Find all lines for this ACL
                 acl_lines = [line.strip() for line in self.running_config.splitlines()
@@ -250,15 +305,16 @@ class CiscoACLParser(CiscoConfigParser):
 
                     # Create entry with default values
                     entry = {
-                        'Line': line_number,
-                        'Number': acl_id,
-                        'Action': parts[2],
-                        'Protocol': parts[3] if len(parts) > 3 else '',
-                        'Src-IP': '',
-                        'Src-Protocol': '',
-                        'Dst-IP': '',
-                        'Dst-Protocol': '',
-                        'Remark': ' | '.join(current_remarks)
+                        "Host": local_hostname,  # Add hostname as first column
+                        "Number": acl_id,        # Move ACL number before Line
+                        "Line": line_number,     # Line number now comes after ACL number
+                        "Action": parts[2],
+                        "Protocol": parts[3] if len(parts) > 3 else '',
+                        "Src-IP": '',
+                        "Src-Protocol": '',
+                        "Dst-IP": '',
+                        "Dst-Protocol": '',
+                        "Remark": ' | '.join(current_remarks)
                     }
 
                     # Handle special case of "permit any" or "deny any"
@@ -334,104 +390,134 @@ class CiscoACLParser(CiscoConfigParser):
 
                 logger.debug(f"Completed processing access-list {acl_id}")
 
+            logger.info("END - Parsing access-list configurations")
+
         except Exception as e:
             logger.error(f"Failed to parse ACL entry: {e}")
+            logger.info("END - Parsing access-list configurations (with errors)")
             raise
 
     def parse_file(self, file_path: Optional[str] = None) -> Dict:
         """
         Overrides base parse_file. Returns the parsed ACL data.
         """
-        # Parsing is done in __init__, just return the results
-        return self.parsed_data
+        try:
+            # Get existing data if any
+            existing_data = self.parsed_data.copy() if self.parsed_data else {}
+            
+            # Add ACL data to existing data
+            existing_data['Access Lists'] = [item for sublist in self.acls.values() for item in sublist]
+            
+            # Update parsed_data with combined data
+            self.parsed_data = existing_data
+            return self.parsed_data
+        except Exception as e:
+            logger.error(f"Failed to prepare ACL data for export: {e}")
+            return {}
 
 
 class CiscoInterfaceParser(CiscoConfigParser):
-    """Parser for Cisco interface configurations"""
+    """
+    Parser for Cisco interface configurations and status information.
+    
+    This class specializes in parsing and analyzing Cisco interface configurations
+    from show-tech files or running configurations. It provides comprehensive
+    information about interface status, configuration, and connectivity.
+    
+    Features:
+        - Parses interface configurations and running status
+        - Extracts IP addresses, VLANs, and descriptions
+        - Handles various interface types (Ethernet, Port-channel, VLAN, etc.)
+        - Normalizes interface names for consistent formatting
+        - Collects CDP neighbor information
+        - Analyzes trunk port configurations
+    
+    The parser processes multiple show commands to build a complete view:
+        - show running-config
+        - show interfaces
+        - show interfaces status
+        - show interfaces trunk
+        - show cdp neighbors detail
+    
+    Attributes:
+        interfaces (Dict[str, Dict]): Parsed interface data organized by interface name
+        trunk_data (List[Dict]): Information about trunk ports
+        cdp_neighbors (List[Dict]): CDP neighbor details
+    
+    Example:
+        >>> parser = CiscoInterfaceParser("switch_config.txt")
+        >>> interface_data = parser.parse_file()
+        >>> for interface in interface_data.get('interfaces', []):
+        ...     print(f"{interface['name']}: {interface['status']}")
+    
+    Notes:
+        - Interface parsing happens during initialization
+        - Supports both IOS and NXOS interface naming conventions
+        - Handles missing or incomplete show command output gracefully
+        - Returns data in a format suitable for Excel export
+    """
 
     def __init__(self, show_tech_file: str):
-        """Initialize the interface parser"""
+        """
+        Initialize the interface parser.
+        
+        Args:
+            show_tech_file (str): Path to the show-tech or configuration file
+                                 containing interface configurations and status.
+        
+        Notes:
+            - Calls parent class initialization first
+            - Sets up data structures for interfaces, trunks, and CDP
+            - Automatically triggers interface parsing if config is available
+        """
         super().__init__(show_tech_file)
         self.interfaces: Dict[str, Dict] = {}
-        self.interface_status: Dict[str, Dict] = {}
-        self.show_interfaces: Optional[str] = None
-        self.show_interfaces_brief: Optional[str] = None
-        self.show_interfaces_trunk: Optional[str] = None # For show int trunk output
-        self.parsed_trunk_data: Dict[str, Dict] = {} # Store parsed trunk status
-        self.show_cdp_neighbor_detail: Optional[str] = None # For CDP output
-        self.parsed_cdp_data: List[Dict] = [] # Store parsed CDP data
-
-        # Assign sections to their specific attributes
-        self.show_interfaces = self.sections.get('show interfaces')
-        self.show_interfaces_brief = self.sections.get('show interface brief') or self.sections.get('show interfaces brief')
-        self.show_interfaces_trunk = self.sections.get('show interface trunk') or self.sections.get('show interfaces trunk')
-        self.show_cdp_neighbor_detail = self.sections.get('show cdp neighbor detail') or self.sections.get('show cdp neighbors detail')
-
+        self.trunk_data: List[Dict] = []
+        self.cdp_neighbors: List[Dict] = []
+        
+        # Initialize parsing
         if self.running_config:
-            self._parse_interfaces()  # Parse interfaces from running config
-            self._update_interface_status() # Update status from extracted sections
-            self._parse_show_interfaces_trunk() # Parse trunk status data
-            self._parse_cdp_neighbor_detail() # Parse CDP data
-
-            # Format interface data for the exporter
-            interface_list_data = [
-                {
-                    "Interface": data["if_name"],
-                    "Type": data["type"],
-                    "Mode": data["mode"],
-                    "VLAN": data["vlan"],
-                    "Allowed Trunks": data["allowed_trunks"],
-                    "Admin State": data["admin_state"],
-                    "Protocol Status": data["protocol_status"],
-                    "Speed": data["speed"],
-                    "Duplex": data["duplex"],
-                    "Media Type": data["media_type"],
-                    "Link Type": data["link_type"],
-                    "Port-Channel": data["port_channel"],
-                    "Description": data["description"],
-                    "IP_CIDR": data["ip_cidr"],
-                    "Hardware Type": data["hardware_type"],
-                    "MAC Address": data["mac_address"],
-                    "MTU": data["mtu"],
-                    "Input Rate": data["input_rate"],
-                    "Output Rate": data["output_rate"],
-                    "Input Errors": data["input_errors"],
-                    "Output Errors": data["output_errors"],
-                    "Input Drops": data["input_drops"],
-                    "Output Drops": data["output_drops"],
-                    "Interface Resets": data["interface_resets"],
-                    "Carrier Trans": data["carrier_transitions"]
-                }
-                for data in self.interfaces.values()
-            ]
-            self.parsed_data['Interfaces'] = interface_list_data # Use sheet name as key
-
-            # Format trunk data for the exporter
-            trunk_list_data = []
-            for if_name, trunk_data in self.parsed_trunk_data.items():
-                # Get description from the main interface data
-                description = self.interfaces.get(if_name, {}).get("description", "")
-                trunk_list_data.append({
-                    "Interface": if_name,
-                    "Description": description,
-                    "Allowed": trunk_data.get("allowed", ""),
-                    "Active": trunk_data.get("active", ""),
-                    "Forwarding": trunk_data.get("forwarding", "")
-                })
-            self.parsed_data['Trunks'] = trunk_list_data # New sheet data
-
-            # Format CDP data for the exporter
-            self.parsed_data['CDP'] = self.parsed_cdp_data # Add CDP sheet data
+            self._parse_interfaces()  # Parse interfaces during init
+            
+        # Parse trunk information if available
+        if 'show interfaces trunk' in self.sections:
+            self.show_interfaces_trunk = self.sections['show interfaces trunk']
+            self._parse_show_interfaces_trunk()
+            
+        # Parse CDP information if available
+        if 'show cdp neighbor detail' in self.sections:  # Fixed section name
+            logger.debug("Found CDP neighbor detail section")
+            self.show_cdp_neighbor_detail = self.sections['show cdp neighbor detail']
+            self._parse_cdp_neighbor_detail()
+        else:
+            logger.debug("No CDP neighbor detail section found in sections: " + ", ".join(self.sections.keys()))
 
     def _normalize_interface_name(self, if_name: str) -> str:
         """
-        Normalize interface names between running-config and show interface brief formats
-
+        Normalize interface names to a consistent format.
+        
+        This method standardizes interface names by expanding common abbreviations
+        and ensuring consistent capitalization. It handles various Cisco interface
+        naming conventions across different platforms.
+        
         Args:
-            if_name (str): Interface name to normalize
-
+            if_name (str): Raw interface name from configuration
+                          (e.g., 'Gi0/1', 'Te1/1', 'Po1')
+        
         Returns:
-            str: Normalized interface name
+            str: Normalized interface name (e.g., 'GigabitEthernet0/1',
+                'TenGigabitEthernet1/1', 'Port-channel1')
+        
+        Examples:
+            >>> parser._normalize_interface_name('Gi0/1')
+            'GigabitEthernet0/1'
+            >>> parser._normalize_interface_name('Te1/1')
+            'TenGigabitEthernet1/1'
+        
+        Notes:
+            - Case-sensitive replacement
+            - Handles both IOS and NXOS naming conventions
+            - Preserves interface numbers and subinterfaces
         """
         # Strip any leading/trailing whitespace
         if_name = if_name.strip()
@@ -469,14 +555,35 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
     def _get_column_positions(self, header_line: str, section_type: str) -> Dict[str, tuple]:
         """
-        Get the start and end positions of each column from the header line
-
+        Parse column positions from show command output headers.
+        
+        This method analyzes the header line from various show commands to determine
+        the start and end positions of each column. This is crucial for correctly
+        parsing fixed-width output formats commonly used in Cisco CLI.
+        
         Args:
             header_line (str): The header line containing column names
-            section_type: Type of section being parsed (ethernet, portchannel, vlan, mgmt)
-
+            section_type (str): Type of show command output being parsed
+                              (e.g., 'status', 'brief')
+        
         Returns:
-            Dict[str, tuple]: Dictionary of column name to (start, end) positions
+            Dict[str, tuple]: Dictionary mapping column names to their positions:
+                            {'column_name': (start_pos, end_pos)}
+        
+        Example:
+            Header line: "Port      Name  Status  Vlan  Duplex Speed Type"
+            Returns: {
+                'Port': (0, 8),
+                'Name': (8, 14),
+                'Status': (14, 22),
+                ...
+            }
+        
+        Notes:
+            - Handles variable width columns
+            - Accounts for spaces in column names
+            - Different parsing logic for different show command types
+            - Returns empty dict if header line is invalid
         """
         logger.debug(f"Getting column positions for section type: {section_type}")
         logger.debug(f"Header line: {header_line}")
@@ -536,14 +643,34 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
     def _parse_interface_line(self, line: str, columns: Dict[str, tuple]) -> Dict[str, str]:
         """
-        Parse a line of interface data using column positions
-
+        Parse a single line from show interface output using column positions.
+        
+        This method extracts interface information from a line of show command
+        output using the pre-determined column positions. It handles the
+        fixed-width format of Cisco CLI output.
+        
         Args:
-            line (str): The line to parse
-            columns: Dictionary of column positions
-
+            line (str): A single line from show interface output
+            columns (Dict[str, tuple]): Column position mapping from _get_column_positions
+        
         Returns:
-            Dict[str, str]: Parsed interface data
+            Dict[str, str]: Parsed values for each column:
+                          {'column_name': 'value', ...}
+        
+        Example:
+            Line: "Gi0/1     uplink    up      1    auto  auto  10/100BaseTX"
+            Returns: {
+                'interface': 'Gi0/1',
+                'name': 'uplink',
+                'status': 'up',
+                'vlan': '1',
+                ...
+            }
+        
+        Notes:
+            - Strips whitespace from extracted values
+            - Handles missing or truncated values
+            - Returns empty strings for values that don't exist
         """
         data = {}
 
@@ -568,7 +695,9 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
     def _parse_interfaces(self) -> None:
         """Parse interface configurations"""
+        logger.info("START - Parsing interface configurations")
         if not self.running_config:
+            logger.info("END - Parsing interface configurations (no running config found)")
             return
 
         try:
@@ -595,6 +724,7 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
                 # Initialize interface dictionary using normalized name
                 self.interfaces[normalized_name] = {
+                    "Host": self.get_hostname(),  # Add hostname as first column
                     "if_name": normalized_name,
                     "type": interface_type,
                     "mode": "access",  # Default mode is access
@@ -708,20 +838,44 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
             logger.debug("\nCompleted initial interface parsing from running-config")
             self._update_interface_status()
+            logger.info("END - Parsing interface configurations")
 
         except Exception as e:
             logger.error(f"Failed to parse interfaces: {e}")
+            logger.info("END - Parsing interface configurations (with errors)")
             raise
 
     def _determine_type(self, interface_name: str) -> str:
         """
-        Determine interface type based on interface name
-
+        Determine the interface type from its name.
+        
+        This method analyzes the interface name to determine its type based on
+        Cisco's interface naming conventions. It supports all common Cisco
+        interface types across IOS and NXOS platforms.
+        
         Args:
-            interface_name (str): Name of the interface
-
+            interface_name (str): Normalized interface name
+                                (e.g., 'GigabitEthernet0/1', 'Vlan100')
+        
         Returns:
-            str: Interface type (ethernet, vlan, port-channel, or loopback)
+            str: Interface type category:
+                - 'Physical': For physical interfaces (Ethernet, Fiber, etc.)
+                - 'Port-channel': For link aggregation interfaces
+                - 'VLAN': For VLAN interfaces
+                - 'Tunnel': For tunnel interfaces
+                - 'Loopback': For loopback interfaces
+                - 'Other': For other interface types
+        
+        Examples:
+            >>> parser._determine_type('GigabitEthernet0/1')
+            'Physical'
+            >>> parser._determine_type('Port-channel1')
+            'Port-channel'
+        
+        Notes:
+            - Case-insensitive matching
+            - Returns 'Other' for unrecognized interface types
+            - Handles both full names and abbreviated forms
         """
         if_name_lower = interface_name.lower()
         if if_name_lower.startswith("vlan"):
@@ -736,8 +890,10 @@ class CiscoInterfaceParser(CiscoConfigParser):
 
     def _update_interface_status(self) -> None:
         """Update interface status from show interfaces section"""
+        logger.info("START - Updating interface status information")
         if not self.show_interfaces and not self.show_interfaces_brief:
             logger.debug("Neither show interfaces nor show interfaces brief section found. Cannot update status.")
+            logger.info("END - Updating interface status information (no status sections found)")
             return
 
         try:
@@ -895,168 +1051,267 @@ class CiscoInterfaceParser(CiscoConfigParser):
                         total_transitions = int(carrier_match.group(1)) + int(carrier_match.group(2))
                         self.interfaces[if_name]["carrier_transitions"] = str(total_transitions)
 
+            logger.info("END - Updating interface status information")
+
         except Exception as e:
             logger.error(f"Failed to update interface status: {e}", exc_info=True)
+            logger.info("END - Updating interface status information (with errors)")
 
     def _parse_show_interfaces_trunk(self) -> None:
-        """Parse the output of 'show interfaces trunk' command."""
+        """Parse the 'show interfaces trunk' output."""
         if not self.show_interfaces_trunk:
-            logger.debug("No 'show interfaces trunk' output found to parse.")
+            logger.warning("No trunk data found to parse")
             return
 
-        logger.debug("--- Parsing show interfaces trunk --- ")
-        self.parsed_trunk_data = {}
+        self.trunk_data = []
         current_section = None
-        # Regex to find Port lines and capture the rest of the line
-        port_line_re = re.compile(r"^([\w\-/\.]+)\s+(.*)$")
-
-        lines = self.show_interfaces_trunk.splitlines()
-        for line in lines:
+        port_data = {}
+        
+        # Initialize section patterns
+        port_pattern = re.compile(r'^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)')
+        vlan_pattern = re.compile(r'^(\S+)\s+(.+)$')
+        
+        for line in self.show_interfaces_trunk.split('\n'):
             line = line.strip()
+            
+            # Skip empty lines
             if not line:
                 continue
-
-            # Identify the section based on header keywords
-            if "allowed on trunk" in line and "active" not in line:
-                current_section = "allowed"
-                logger.debug("Entering trunk section: allowed")
+                
+            # Check for section headers
+            if line.startswith('Port'):
+                current_section = 'port'
                 continue
-            elif "allowed and active" in line:
-                current_section = "active"
-                logger.debug("Entering trunk section: active")
+            elif line.startswith('Vlans allowed on trunk'):
+                current_section = 'allowed'
                 continue
-            elif "forwarding state and not pruned" in line:
-                current_section = "forwarding"
-                logger.debug("Entering trunk section: forwarding")
+            elif line.startswith('Vlans allowed and active'):
+                current_section = 'active'
                 continue
-            elif line.startswith("Port") or line.startswith("---"):
-                # Skip header lines or separators
+            elif line.startswith('Vlans in spanning tree forwarding'):
+                current_section = 'forwarding'
                 continue
-
-            # If we are inside a known section, parse the port data
-            if current_section:
-                match = port_line_re.match(line)
+                
+            # Parse data based on current section
+            if current_section == 'port':
+                match = port_pattern.match(line)
                 if match:
-                    port_name = self._normalize_interface_name(match.group(1))
-                    vlan_data = match.group(2).strip()
-                    logger.debug(f"  Found Port: {port_name}, Section: {current_section}, Data: {vlan_data}")
-
-                    if port_name not in self.parsed_trunk_data:
-                        self.parsed_trunk_data[port_name] = {}
-                    
-                    self.parsed_trunk_data[port_name][current_section] = vlan_data
-                else:
-                    # Handle potential wrapped lines (simple append strategy)
-                    # Find the last processed port if possible
-                    last_port = list(self.parsed_trunk_data.keys())[-1] if self.parsed_trunk_data else None
-                    if last_port and current_section in self.parsed_trunk_data[last_port]:
-                        logger.debug(f"    Appending wrapped line to {last_port}[{current_section}]: {line}")
-                        self.parsed_trunk_data[last_port][current_section] += " " + line
-                    else:
-                        logger.warning(f"Could not associate wrapped line in section '{current_section}': {line}")
-       
-        logger.debug("--- Finished parsing show interfaces trunk --- ")
-        logger.debug(f"Parsed trunk data: {self.parsed_trunk_data}")
+                    port, mode, encap, status = match.groups()
+                    if port not in port_data:
+                        # Get interface description from parsed interfaces
+                        description = ""
+                        if hasattr(self, 'interfaces') and port in self.interfaces:
+                            description = self.interfaces[port].get('Description', '')
+                            
+                        port_data[port] = {
+                            'Host': self.hostname,
+                            'Interface': port,
+                            'Description': description,
+                            'Mode': mode,
+                            'Native VLAN': encap,
+                            'Allowed VLANs': '',
+                            'Active VLANs': '',
+                            'Forwarding VLANs': ''
+                        }
+                        
+            elif current_section in ['allowed', 'active', 'forwarding']:
+                match = vlan_pattern.match(line)
+                if match:
+                    port, vlans = match.groups()
+                    if port in port_data:
+                        if current_section == 'allowed':
+                            port_data[port]['Allowed VLANs'] = vlans.strip()
+                        elif current_section == 'active':
+                            port_data[port]['Active VLANs'] = vlans.strip()
+                        elif current_section == 'forwarding':
+                            port_data[port]['Forwarding VLANs'] = vlans.strip()
+        
+        # Add all port data to trunk_data list
+        self.trunk_data.extend(port_data.values())
+        logger.info(f"Found {len(self.trunk_data)} trunk interfaces")
 
     def _parse_cdp_neighbor_detail(self) -> None:
         """Parse the output of 'show cdp neighbor detail' command."""
+        logger.info("START - Parsing CDP neighbor information")
         if not self.show_cdp_neighbor_detail:
             logger.debug("No 'show cdp neighbor detail' output found to parse.")
+            logger.info("END - Parsing CDP neighbor information (no CDP data found)")
             return
 
-        logger.debug("--- Parsing show cdp neighbor detail --- ")
-        self.parsed_cdp_data = []
-        local_hostname = self.get_hostname() # Get local hostname
+        logger.debug("=== Starting CDP Parsing ===")
+        logger.debug("Raw CDP section content (first 500 chars):\n" + self.show_cdp_neighbor_detail[:500] + "...")
+        self.cdp_neighbors = []
+        local_hostname = self.get_hostname()
+        logger.debug(f"Local hostname: {local_hostname}")
 
-        # Split the output into individual neighbor entries
-        neighbor_entries = re.split(r'\n-{20,}\n', self.show_cdp_neighbor_detail)
+        try:
+            # Split the output into individual neighbor entries
+            neighbor_entries = re.split(r'\n(?=-{3,}|\s*Device ID:)', self.show_cdp_neighbor_detail)
+            logger.debug(f"Found {len(neighbor_entries)} potential CDP entries")
+            logger.debug("First entry preview (first 200 chars):\n" + neighbor_entries[0][:200] + "...")
+            if len(neighbor_entries) > 1:
+                logger.debug("Second entry preview (first 200 chars):\n" + neighbor_entries[1][:200] + "...")
+        except Exception as e:
+            logger.error(f"Failed to split CDP entries: {str(e)}")
+            return
 
+        # Map for converting capability text to codes
         capability_map = {
             "Router": "R", "Switch": "S", "IGMP": "I", "Host": "H",
-            "Trans Bridge": "T", "Source Route Bridge": "B", "Repeater": "r",
-            "Phone": "P", "Remote": "D", "CVTA": "C", "Two-port Mac Relay": "M"
-            # Add other mappings if necessary
+            "Trans-Bridge": "T", "Source-Route-Bridge": "B", "Bridge": "B",
+            "Phone": "P", "Remote": "D", "CVTA": "C", "Two-port-Mac-Relay": "M",
+            "Trans Bridge": "T", "Source Route Bridge": "B", "Two-port Mac Relay": "M"
         }
 
-        for entry in neighbor_entries:
+        for i, entry in enumerate(neighbor_entries, 1):
             if not entry.strip():
+                logger.debug(f"Skipping empty entry {i}")
                 continue
-            
-            logger.debug(f"Processing CDP entry:\n{entry[:200]}...") # Log start of entry
 
-            data = {
-                "Hostname": local_hostname,
-                "Local Interface": "",
-                "Platform": "",
-                "Remote Hostname": "",
-                "Remote Port": "",
-                "Remote Mgmt IP": "",
-                "Remote Type": "",
-                "Capabilities": "",
-            }
+            logger.debug(f"\n=== Processing CDP Entry {i} ===")
+            logger.debug(f"Entry content preview:\n{entry[:300]}...")
 
-            # Extract fields using regex
-            device_id_match = re.search(r"Device ID:\s*(.*)", entry)
-            if device_id_match: data["Remote Hostname"] = device_id_match.group(1).strip()
+            try:
+                # Initialize data dictionary for this neighbor
+                data = {
+                    "Host": local_hostname,
+                    "Local Interface": "",
+                    "Remote Hostname": "",
+                    "Remote Port": "",
+                    "Remote IP": "",
+                    "Platform": "",
+                    "Capabilities": "",
+                    "Remote Version": ""
+                }
 
-            interface_match = re.search(r"Interface:\s*([\w\-/\.]+),?\s*Port ID\s*\(outgoing port\):\s*(.*)", entry)
-            if interface_match:
-                data["Local Interface"] = self._normalize_interface_name(interface_match.group(1).strip())
-                data["Remote Port"] = interface_match.group(2).strip()
+                # Extract Device ID (Remote Hostname)
+                device_id_pattern = r"(?:Device ID:|Device ID\s*:\s*)(.*?)(?:\(|\n|$)"
+                device_id_match = re.search(device_id_pattern, entry, re.IGNORECASE | re.MULTILINE)
+                if device_id_match:
+                    data["Remote Hostname"] = device_id_match.group(1).strip()
+                    logger.debug(f"Found Device ID: '{data['Remote Hostname']}'")
+                else:
+                    logger.debug(f"No Device ID match found. Pattern: {device_id_pattern}")
+                    logger.debug("Entry section:\n" + entry[:200])
 
-            platform_cap_match = re.search(r"Platform:\s*(.*?),(?:\s*Capabilities:|$) *Capabilities:\s*(.*)", entry, re.IGNORECASE)
-            if platform_cap_match:
-                data["Platform"] = platform_cap_match.group(1).strip()
-                caps_text = platform_cap_match.group(2).strip()
-                # Convert text capabilities to codes
-                cap_codes = [capability_map.get(cap.strip(), cap.strip()) for cap in caps_text.split()]
-                data["Capabilities"] = " ".join(cap_codes)
-            else: # Try finding Platform alone if capabilities are missing/different format
-                 platform_match = re.search(r"Platform:\s*(.*?)(?:,|$)", entry, re.IGNORECASE)
-                 if platform_match: data["Platform"] = platform_match.group(1).strip()
-                 # Try finding Capabilities alone
-                 caps_match = re.search(r"Capabilities:\s*(.*)", entry, re.IGNORECASE)
-                 if caps_match: 
-                     caps_text = caps_match.group(1).strip()
-                     cap_codes = [capability_map.get(cap.strip(), cap.strip()) for cap in caps_text.split()]
-                     data["Capabilities"] = " ".join(cap_codes)
+                # Extract Interface and Port ID
+                interface_pattern = r"Interface:\s*([\w\-/\.]+)[,\s]*Port ID \(outgoing port\):\s*(.*?)(?:\n|$)"
+                interface_match = re.search(interface_pattern, entry, re.IGNORECASE | re.MULTILINE)
+                if interface_match:
+                    data["Local Interface"] = self._normalize_interface_name(interface_match.group(1).strip())
+                    data["Remote Port"] = interface_match.group(2).strip()
+                    logger.debug(f"Found Interface: '{data['Local Interface']}', Port: '{data['Remote Port']}'")
+                else:
+                    logger.debug(f"No Interface match found. Pattern: {interface_pattern}")
+                    logger.debug("Entry section:\n" + entry[:200])
 
-            mgmt_ip_match = re.search(r"Management address\(es\):.*?IP address:\s*([\d\.]+)", entry, re.DOTALL)
-            if mgmt_ip_match: data["Remote Mgmt IP"] = mgmt_ip_match.group(1).strip()
-            else: # Fallback to Entry address if mgmt not found
-                entry_ip_match = re.search(r"Entry address\(es\):.*?IP address:\s*([\d\.]+)", entry, re.DOTALL)
-                if entry_ip_match: data["Remote Mgmt IP"] = entry_ip_match.group(1).strip()
+                # Extract Platform
+                platform_pattern = r"Platform:\s*(.*?)(?:,|\n|$)"
+                platform_match = re.search(platform_pattern, entry, re.IGNORECASE | re.MULTILINE)
+                if platform_match:
+                    data["Platform"] = platform_match.group(1).strip()
+                    logger.debug(f"Found Platform: '{data['Platform']}'")
+                else:
+                    logger.debug(f"No Platform match found. Pattern: {platform_pattern}")
 
-            version_match = re.search(r"Version :\s*\n\s*(.*)", entry)
-            if version_match: data["Remote Type"] = version_match.group(1).strip()
+                # Extract Capabilities
+                caps_pattern = r"Capabilities:\s*(.*?)(?:\n|$)"
+                caps_match = re.search(caps_pattern, entry, re.IGNORECASE | re.MULTILINE)
+                if caps_match: 
+                    caps_text = caps_match.group(1).strip()
+                    cap_codes = []
+                    logger.debug(f"Found capabilities text: '{caps_text}'")
+                    for cap in caps_text.split():
+                        cap = cap.strip(' ,')
+                        if cap in capability_map:
+                            cap_codes.append(capability_map[cap])
+                            logger.debug(f"Mapped capability '{cap}' to '{capability_map[cap]}'")
+                        else:
+                            logger.debug(f"No mapping found for capability: '{cap}'")
+                    data["Capabilities"] = "".join(sorted(set(cap_codes)))
+                    logger.debug(f"Final capabilities string: '{data['Capabilities']}'")
+                else:
+                    logger.debug(f"No Capabilities match found. Pattern: {caps_pattern}")
 
-            # Only add if we found essential info like Remote Hostname
-            if data["Remote Hostname"]:
-                 self.parsed_cdp_data.append(data)
-                 logger.debug(f"  Added CDP neighbor: {data}")
-            else:
-                 logger.warning(f"Skipping CDP entry due to missing Device ID: {entry[:100]}...")
+                # Extract IP Address
+                ip_pattern = r"(?:Management address|IP address|IPv4 address):\s*([\d\.]+)"
+                ip_match = re.search(ip_pattern, entry, re.IGNORECASE | re.MULTILINE)
+                if ip_match:
+                    data["Remote IP"] = ip_match.group(1).strip()
+                    logger.debug(f"Found IP: '{data['Remote IP']}'")
+                else:
+                    logger.debug(f"No IP match found. Pattern: {ip_pattern}")
 
-        logger.debug("--- Finished parsing show cdp neighbor detail --- ")
+                # Extract Software Version
+                version_pattern = r"(?:Software Version|Version|Cisco IOS Software).*?[\r\n]+\s*(.*?)(?:\n\n|\n(?=[A-Z])|advertisement|Configuration|Copyright|\Z)"
+                version_match = re.search(version_pattern, entry, re.DOTALL | re.IGNORECASE)
+                if version_match:
+                    version = re.sub(r'\s+', ' ', version_match.group(1).strip())
+                    data["Remote Version"] = version
+                    logger.debug(f"Found Version: '{version[:100]}...'")
+                else:
+                    logger.debug(f"No Version match found. Pattern: {version_pattern}")
+
+                # Validate entry
+                if data["Remote Hostname"] and data["Local Interface"]:
+                    self.cdp_neighbors.append(data)
+                    logger.debug(f"Successfully added CDP neighbor: {data['Local Interface']} -> {data['Remote Hostname']}")
+                else:
+                    logger.warning(
+                        f"Skipping CDP entry {i} due to missing essential information:\n"
+                        f"Remote Hostname='{data['Remote Hostname']}'\n"
+                        f"Local Interface='{data['Local Interface']}'"
+                    )
+
+            except Exception as e:
+                logger.error(f"Error processing CDP entry {i}: {str(e)}")
+                logger.debug("Problematic entry content:\n" + entry)
+                continue
+
+        logger.debug("\n=== Final CDP Processing Results ===")
+        logger.debug(f"Total entries processed: {len(neighbor_entries)}")
+        logger.debug(f"Successfully parsed neighbors: {len(self.cdp_neighbors)}")
+        if self.cdp_neighbors:
+            logger.debug("Parsed CDP neighbors:")
+            for neighbor in self.cdp_neighbors:
+                logger.debug(
+                    f"  {neighbor['Local Interface']} -> {neighbor['Remote Hostname']}\n"
+                    f"    IP: {neighbor['Remote IP']}\n"
+                    f"    Platform: {neighbor['Platform']}\n"
+                    f"    Capabilities: {neighbor['Capabilities']}"
+                )
+        else:
+            logger.warning("No CDP neighbors were successfully parsed!")
+
+        logger.info(f"END - Parsing CDP neighbor information (found {len(self.cdp_neighbors)} neighbors)")
 
     def parse_file(self, file_path: Optional[str] = None) -> Dict:
-        """
-        Overrides base parse_file. Returns the parsed interface data.
-        """
-        # Parsing is done in __init__, just return the results
-        return self.parsed_data
+        """Parse interface configuration and status information."""
+        try:
+            logger.info("START - Preparing interface data for export")
+            # Convert interfaces dictionary to list for Excel export
+            interface_list = []
+            for interface in self.interfaces.values():
+                interface_list.append(interface)
+            
+            # Prepare the data dictionary with all sections
+            self.parsed_data = {
+                'Interfaces': interface_list,
+                'Trunks': self.trunk_data if hasattr(self, 'trunk_data') else [],
+                'CDP': self.cdp_neighbors if hasattr(self, 'cdp_neighbors') else []
+            }
+            
+            logger.info("END - Preparing interface data for export")
+            return self.parsed_data
+        except Exception as e:
+            logger.error(f"Failed to prepare interface data for export: {e}")
+            logger.info("END - Preparing interface data for export (with errors)")
+            return {}
 
 
 def _determine_device_type(content: str) -> str:
-    """
-    Determine device type by examining show version output
-
-    Args:
-        content (str): File content
-
-    Returns:
-        str: Device type
-    """
+    """Determine device type by examining show version output"""
+    logger.info("START - Determining device type")
     # First try to find show version section
     version_match = None
 
@@ -1083,15 +1338,18 @@ def _determine_device_type(content: str) -> str:
 
     # Determine device type from version text - case insensitive matching
     if re.search(r'NX-OS|Nexus', version_text, re.IGNORECASE):
-        return "Nexus Switch"
+        device_type = "Nexus Switch"
     elif re.search(r'IOS-XE.*Catalyst|Catalyst.*IOS-XE', version_text, re.IGNORECASE):
-        return "Catalyst Switch"
+        device_type = "Catalyst Switch"
     elif re.search(r'IOS-XE', version_text, re.IGNORECASE):
-        return "IOS-XE Router"
+        device_type = "IOS-XE Router"
     elif re.search(r'IOS Software', version_text, re.IGNORECASE):
-        return "IOS Router"
+        device_type = "IOS Router"
     else:
-        return "Unknown Cisco Device"
+        device_type = "Unknown Cisco Device"
+
+    logger.info(f"END - Determining device type: {device_type}")
+    return device_type
 
 
 def sanitize_file_content(filepath: str) -> str:
@@ -1261,24 +1519,42 @@ def main():
 
 def process_file(filename: str, parse_type: str, display: bool) -> None:
     """Process a single show tech file"""
-    if parse_type == 'both':
-        # Parse both interfaces and ACLs
-        interface_parser = CiscoInterfaceParser(filename)
-        acl_parser = CiscoACLParser(filename)
+    try:
+        logger.info(f"START - Processing file: {filename}")
+        if parse_type == 'both':
+            # Parse interfaces first
+            interface_parser = CiscoInterfaceParser(filename)
+            interface_data = interface_parser.parse_file()
+            
+            # Parse ACLs and combine with interface data
+            acl_parser = CiscoACLParser(filename)
+            acl_data = acl_parser.parse_file()
+            
+            # Combine the data
+            combined_data = interface_data.copy()
+            combined_data.update(acl_data)
+            
+            # Update the parsed_data in interface_parser
+            interface_parser.parsed_data = combined_data
+            
+            print("\n=== Combined Configuration ===")
+            interface_parser.save_output(display)
 
-        print("\n=== Interface Configuration ===")
-        interface_parser.save_output(display)
+        elif parse_type == 'acl':
+            config_parser = CiscoACLParser(filename)
+            config_parser.parse_file()  # Make sure to parse before saving
+            config_parser.save_output(display)
 
-        print("\n=== Access List Configuration ===")
-        acl_parser.save_output(display)
-
-    elif parse_type == 'acl':
-        config_parser = CiscoACLParser(filename)
-        config_parser.save_output(display)
-
-    elif parse_type == 'interface':
-        config_parser = CiscoInterfaceParser(filename)
-        config_parser.save_output(display)
+        elif parse_type == 'interface':
+            config_parser = CiscoInterfaceParser(filename)
+            config_parser.parse_file()  # Make sure to parse before saving
+            config_parser.save_output(display)
+            
+        logger.info(f"END - Processing file: {filename}")
+    except Exception as e:
+        logger.error(f"Failed to process {filename}: {e}", exc_info=True)
+        logger.info(f"END - Processing file: {filename} (with errors)")
+        raise
 
 
 if __name__ == "__main__":

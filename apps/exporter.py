@@ -1,3 +1,18 @@
+"""
+Excel Export Module
+
+This module provides functionality to export parsed network configuration data
+to Excel files. It handles the creation of multi-sheet workbooks with formatted
+tables and proper error handling.
+
+Features:
+- Creates Excel workbooks with multiple sheets
+- Automatically formats data as tables with headers
+- Handles sheet name sanitization
+- Includes timestamps in filenames
+- Provides comprehensive error handling and logging
+"""
+
 import os
 import datetime
 import logging
@@ -10,13 +25,54 @@ logger = logging.getLogger(__name__)
 
 def export_data_to_excel(parsed_data: Dict[str, List[Dict]], output_dir: str, hostname: str):
     """
-    Export parsed data to a single Excel file with multiple sheets.
-
+    Export parsed network configuration data to a formatted Excel file.
+    
+    This function takes parsed configuration data and creates a well-formatted
+    Excel workbook with multiple sheets. Each sheet contains a table with the
+    corresponding data, including headers and consistent formatting.
+    
     Args:
-        parsed_data (Dict[str, List[Dict]]): Dictionary where keys are sheet names
-                                             and values are lists of dictionaries (rows).
-        output_dir (str): Directory to save the output file.
-        hostname (str): Device hostname used for the filename.
+        parsed_data (Dict[str, List[Dict]]): Dictionary containing the data to export:
+            - Keys: Sheet names (will be sanitized)
+            - Values: Lists of dictionaries, where each dictionary represents a row
+                     and its keys are the column headers
+            Example:
+            {
+                'Interfaces': [
+                    {'Name': 'Gi0/1', 'IP': '192.168.1.1', 'Status': 'up'},
+                    {'Name': 'Gi0/2', 'IP': '192.168.1.2', 'Status': 'down'}
+                ]
+            }
+        
+        output_dir (str): Directory path where the Excel file will be saved.
+                         Will be created if it doesn't exist.
+        
+        hostname (str): Device hostname used in the filename.
+                       Final filename format: "<hostname>_YYYYMMDD_HHMMSS.xlsx"
+    
+    Returns:
+        None
+    
+    Raises:
+        ValueError: If parsed_data is empty or invalid
+        Exception: For other errors (e.g., file system issues)
+    
+    Notes:
+        - Each sheet is formatted as a table with alternating row colors
+        - Sheet names are sanitized (alphanumeric + some special chars, max 31 chars)
+        - Empty sheets are skipped with a warning
+        - Invalid data formats are logged and skipped
+        - The function creates the output directory if it doesn't exist
+    
+    Example:
+        >>> data = {
+        ...     'Interfaces': [
+        ...         {'Name': 'Gi0/1', 'IP': '192.168.1.1', 'Status': 'up'},
+        ...         {'Name': 'Gi0/2', 'IP': '192.168.1.2', 'Status': 'down'}
+        ...     ]
+        ... }
+        >>> export_data_to_excel(data, 'output', 'ROUTER-01')
+        # Creates: output/ROUTER-01_20240321_143022.xlsx
     """
     try:
         if not os.path.exists(output_dir):
