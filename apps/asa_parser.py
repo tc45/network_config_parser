@@ -15,16 +15,23 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 class AsaParser:
     """Parser for Cisco ASA configuration files."""
 
-    def __init__(self):
-        self.hostname = "unknown" # Initialize hostname
+    def __init__(self, show_tech_file: str):
+        """Initialize the ASA parser with the show tech file path."""
+        self.show_tech_file = show_tech_file
+        self.hostname = "unknown"
+        self.parsed_data = {}
+        # Don't parse in init, wait for explicit parse_file call
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path=None):
         """Parse the ASA configuration file."""
         try:
+            # Use the file_path if provided, otherwise use the one from init
+            file_path = file_path or self.show_tech_file
             logging.info(f"Parsing file: {file_path}")
             with open(file_path, 'r') as file:
                 config_data = file.read()
-            return self.parse_data(config_data)
+            self.parsed_data = self.parse_data(config_data)
+            return self.parsed_data
         except FileNotFoundError:
             logging.error(f"File not found: {file_path}")
             raise

@@ -377,16 +377,30 @@ class CiscoInterfaceParser(CiscoConfigParser):
             interface_list_data = [
                 {
                     "Interface": data["if_name"],
-                    "VLAN": data["vlan"],
                     "Type": data["type"],
                     "Mode": data["mode"],
-                    "Status": data["status"],
-                    "Reason": data["reason"],
+                    "VLAN": data["vlan"],
+                    "Allowed Trunks": data["allowed_trunks"],
+                    "Admin State": data["admin_state"],
+                    "Protocol Status": data["protocol_status"],
                     "Speed": data["speed"],
+                    "Duplex": data["duplex"],
+                    "Media Type": data["media_type"],
+                    "Link Type": data["link_type"],
                     "Port-Channel": data["port_channel"],
                     "Description": data["description"],
                     "IP_CIDR": data["ip_cidr"],
-                    "Allowed Trunks": data["allowed_trunks"] # Add Allowed Trunks (from config)
+                    "Hardware Type": data["hardware_type"],
+                    "MAC Address": data["mac_address"],
+                    "MTU": data["mtu"],
+                    "Input Rate": data["input_rate"],
+                    "Output Rate": data["output_rate"],
+                    "Input Errors": data["input_errors"],
+                    "Output Errors": data["output_errors"],
+                    "Input Drops": data["input_drops"],
+                    "Output Drops": data["output_drops"],
+                    "Interface Resets": data["interface_resets"],
+                    "Carrier Trans": data["carrier_transitions"]
                 }
                 for data in self.interfaces.values()
             ]
@@ -582,16 +596,49 @@ class CiscoInterfaceParser(CiscoConfigParser):
                 # Initialize interface dictionary using normalized name
                 self.interfaces[normalized_name] = {
                     "if_name": normalized_name,
-                    "vlan": "",
                     "type": interface_type,
                     "mode": "access",  # Default mode is access
-                    "status": "",
-                    "reason": "",
+                    "vlan": "",
+                    "allowed_trunks": "", # Initialize allowed_trunks
+                    "admin_state": "",
+                    "protocol_status": "",
                     "speed": "",
+                    "duplex": "",
+                    "media_type": "",
+                    "link_type": "",
+                    "flow_control_in": "",
+                    "flow_control_out": "",
                     "port_channel": port_channel_num,  # Set port-channel number if found
                     "description": "",
                     "ip_cidr": "",
-                    "allowed_trunks": "" # Initialize allowed_trunks
+                    "hardware_type": "",
+                    "mac_address": "",
+                    "bia_address": "",  # Burned In Address
+                    "mtu": "",
+                    "bandwidth": "",
+                    "delay": "",
+                    "reliability": "",
+                    "txload": "",
+                    "rxload": "",
+                    "encapsulation": "",
+                    "arp_timeout": "",
+                    "last_input": "",
+                    "last_output": "",
+                    "last_output_hang": "",
+                    "queue_strategy": "",
+                    "input_rate": "",
+                    "output_rate": "",
+                    "input_packets": "",
+                    "output_packets": "",
+                    "input_errors": "",
+                    "output_errors": "",
+                    "unknown_protocols": "",
+                    "broadcasts_received": "",
+                    "multicasts_received": "",
+                    "input_drops": "",
+                    "output_drops": "",
+                    "interface_resets": "",
+                    "carrier_transitions": ""
                 }
 
                 # If it's a Vlan or Loopback interface, force mode to routed immediately
@@ -728,7 +775,6 @@ class CiscoInterfaceParser(CiscoConfigParser):
                                 logger.debug("Entering port-channel section")
                                 in_section = False
                                 continue
-                            # Add other section checks...
 
                         # Skip the interface/header continuation line
                         if 'Interface' in line or 'Ch #' in line:
@@ -746,96 +792,111 @@ class CiscoInterfaceParser(CiscoConfigParser):
                             if if_name in self.interfaces:
                                 logger.debug(f"Updating interface {if_name}")
                                 update_data = {
-                                    "status": parsed_data['status']
+                                    "protocol_status": parsed_data['status']
                                 }
 
                                 # Add fields based on section type
                                 if current_section in ['ethernet', 'portchannel']:
                                     update_data.update({
                                         "vlan": parsed_data['vlan'],
-                                        "reason": parsed_data['reason'],
                                         "speed": parsed_data['speed'].split('(')[0].strip(),  # Remove (D) suffix
                                     })
                                     if 'port_ch' in parsed_data:
                                         if parsed_data['port_ch'] != '--':
                                             update_data["port_channel"] = parsed_data['port_ch']
-                                elif current_section == 'vlan':
-                                    update_data.update({
-                                        "reason": parsed_data['reason']
-                                    })
 
                                 self.interfaces[if_name].update(update_data)
                             else:
                                 logger.debug(f"Interface {if_name} not found in running-config")
 
-                    logger.debug("\nCompleted parsing Nexus interface brief output")
-
-                    # Continue with detailed output parsing for any missing information
-                    if hasattr(self, 'show_interfaces'):
-                        interface_sections = re.split(r'\n(?=\S+? is)', self.show_interfaces)
-                        for section in interface_sections:
-                            name_match = re.match(r'(\S+?) is', section)
-                            if not name_match:
-                                continue
-
-                            if_name = self._normalize_interface_name(name_match.group(1))
-                            if if_name not in self.interfaces:
-                                continue
-
-                            # Update speed if not already set
-                            if not self.interfaces[if_name].get("speed"):
-                                bw_match = re.search(r'BW (\d+) (?:Kbit|kbit)', section)
-                                if bw_match:
-                                    speed_kbps = int(bw_match.group(1))
-                                    self.interfaces[if_name]["speed"] = self._convert_speed(speed_kbps)
-
-            else:
-                # Original IOS parsing logic
-                if not hasattr(self, 'show_interfaces'):
-                    return
-
+            # Parse detailed interface information from show interfaces
+            if hasattr(self, 'show_interfaces'):
                 interface_sections = re.split(r'\n(?=\S+? is)', self.show_interfaces)
                 for section in interface_sections:
-                    name_match = re.match(r'(\S+?) is', section)
+                    if not section.strip():
+                        continue
+
+                    # Extract interface name and basic status
+                    name_match = re.match(r'(\S+?) is (.*?), line protocol is (\S+)', section)
                     if not name_match:
                         continue
 
-                    if_name = name_match.group(1)
+                    if_name = self._normalize_interface_name(name_match.group(1))
                     if if_name not in self.interfaces:
                         continue
 
-                    status_match = re.search(r'line protocol is (\S+)', section)
-                    if status_match:
-                        self.interfaces[if_name]["status"] = status_match.group(1)
+                    # Update admin and protocol status
+                    self.interfaces[if_name]["admin_state"] = name_match.group(2)
+                    self.interfaces[if_name]["protocol_status"] = name_match.group(3)
 
-                    bw_match = re.search(r'BW (\d+) (?:Kbit|kbit)', section)
-                    if bw_match:
-                        speed_kbps = int(bw_match.group(1))
-                        self.interfaces[if_name]["speed"] = self._convert_speed(speed_kbps)
+                    # Extract hardware type and MAC addresses
+                    hw_match = re.search(r'Hardware is (.*?), address is (\S+)(?:\s+\(bia (\S+)\))?', section)
+                    if hw_match:
+                        self.interfaces[if_name]["hardware_type"] = hw_match.group(1)
+                        self.interfaces[if_name]["mac_address"] = hw_match.group(2)
+                        if hw_match.group(3):
+                            self.interfaces[if_name]["bia_address"] = hw_match.group(3)
+
+                    # Extract duplex, speed, link type and media type
+                    link_info_match = re.search(r'((?:Auto|Full|Half)-duplex), (\d+(?:\.\d+)?[MG]b/s)(?:, link type is ([\w-]+))?,?\s*(?:media type is ([\w-]+\s*[\w-]+))?', section)
+                    if link_info_match:
+                        self.interfaces[if_name]["duplex"] = link_info_match.group(1)
+                        self.interfaces[if_name]["speed"] = link_info_match.group(2)
+                        if link_info_match.group(3):
+                            self.interfaces[if_name]["link_type"] = link_info_match.group(3)
+                        if link_info_match.group(4):
+                            self.interfaces[if_name]["media_type"] = link_info_match.group(4)
+
+                    # Extract flow control information
+                    flow_control_match = re.search(r'input flow-control is (\w+), output flow-control is (\w+)', section)
+                    if flow_control_match:
+                        self.interfaces[if_name]["flow_control_in"] = flow_control_match.group(1)
+                        self.interfaces[if_name]["flow_control_out"] = flow_control_match.group(2)
+
+                    # Extract MTU, BW, DLY
+                    mtu_match = re.search(r'MTU (\d+) bytes, BW (\d+) Kbit/sec, DLY (\d+) usec', section)
+                    if mtu_match:
+                        self.interfaces[if_name]["mtu"] = mtu_match.group(1)
+                        self.interfaces[if_name]["bandwidth"] = mtu_match.group(2)
+                        self.interfaces[if_name]["delay"] = mtu_match.group(3)
+
+                    # Extract reliability and load
+                    load_match = re.search(r'reliability (\d+)/\d+, txload (\d+)/\d+, rxload (\d+)/\d+', section)
+                    if load_match:
+                        self.interfaces[if_name]["reliability"] = load_match.group(1)
+                        self.interfaces[if_name]["txload"] = load_match.group(2)
+                        self.interfaces[if_name]["rxload"] = load_match.group(3)
+
+                    # Extract input/output rates
+                    rate_match = re.search(r'(\d+) minute input rate (\d+) bits/sec.*?(\d+) minute output rate (\d+) bits/sec', section, re.DOTALL)
+                    if rate_match:
+                        self.interfaces[if_name]["input_rate"] = f"{rate_match.group(2)} bits/sec"
+                        self.interfaces[if_name]["output_rate"] = f"{rate_match.group(4)} bits/sec"
+
+                    # Extract broadcast/multicast information
+                    broadcast_match = re.search(r'Received (\d+) broadcasts \((\d+) multicasts\)', section)
+                    if broadcast_match:
+                        self.interfaces[if_name]["broadcasts_received"] = broadcast_match.group(1)
+                        self.interfaces[if_name]["multicasts_received"] = broadcast_match.group(2)
+
+                    # Extract queue drops
+                    queue_match = re.search(r'Input queue: (\d+)/\d+/(\d+)/\d+ \(size/max/drops/flushes\); Total output drops: (\d+)', section)
+                    if queue_match:
+                        self.interfaces[if_name]["input_drops"] = queue_match.group(2)
+                        self.interfaces[if_name]["output_drops"] = queue_match.group(3)
+
+                    # Extract interface resets and carrier transitions
+                    resets_match = re.search(r'(\d+) interface resets', section)
+                    if resets_match:
+                        self.interfaces[if_name]["interface_resets"] = resets_match.group(1)
+
+                    carrier_match = re.search(r'(\d+) lost carrier, (\d+) no carrier', section)
+                    if carrier_match:
+                        total_transitions = int(carrier_match.group(1)) + int(carrier_match.group(2))
+                        self.interfaces[if_name]["carrier_transitions"] = str(total_transitions)
 
         except Exception as e:
             logger.error(f"Failed to update interface status: {e}", exc_info=True)
-
-    def _convert_speed(self, speed_kbps: int) -> str:
-        """
-        Convert speed from Kbit/sec to human readable format
-
-        Args:
-            speed_kbps (int): Speed in Kbit/sec
-
-        Returns:
-            str: Formatted speed string
-        """
-        if speed_kbps >= 10000000:
-            return "10G"
-        elif speed_kbps >= 1000000:
-            return "1G"
-        elif speed_kbps >= 100000:
-            return "100M"
-        elif speed_kbps >= 10000:
-            return "10M"
-        else:
-            return f"{speed_kbps}K"
 
     def _parse_show_interfaces_trunk(self) -> None:
         """Parse the output of 'show interfaces trunk' command."""
