@@ -18,6 +18,7 @@ import sys
 from openpyxl import Workbook, load_workbook
 from apps.utils import ip_mask_to_cidr # Import the new utility
 from logging.handlers import TimedRotatingFileHandler
+import json
 
 # Get module logger
 logger = logging.getLogger(__name__)
@@ -553,6 +554,32 @@ class CiscoInterfaceParser(CiscoConfigParser):
         # Return original name if no normalization needed
         return if_name
 
+    def _get_truncated_interface_name(self, if_name: str) -> str:
+        """Convert full interface name to truncated version for trunk matching."""
+        if_name_lower = if_name.lower()
+        
+        # Handle port-channels - convert both Po and port-channel formats to Po format
+        if if_name_lower.startswith('port-channel'):
+            return f"Po{if_name_lower.replace('port-channel', '')}"
+        elif if_name_lower.startswith('po'):
+            return if_name  # Keep Po format as is
+        
+        # Map of full names to their truncated versions
+        name_map = {
+            'tengigabitethernet': 'Te',
+            'gigabitethernet': 'Gi',
+            'fastethernet': 'Fa',
+            'ethernet': 'Et'
+        }
+        
+        for full_name, short_name in name_map.items():
+            if if_name_lower.startswith(full_name):
+                # Extract the interface number and append to truncated name
+                number_part = if_name[len(full_name):]
+                return f"{short_name}{number_part}"
+        
+        return if_name  # Return original if no mapping found
+
     def _get_column_positions(self, header_line: str, section_type: str) -> Dict[str, tuple]:
         """
         Parse column positions from show command output headers.
@@ -756,12 +783,17 @@ class CiscoInterfaceParser(CiscoConfigParser):
                     "last_output": "",
                     "last_output_hang": "",
                     "queue_strategy": "",
-                    "input_rate": "",
-                    "output_rate": "",
+                    "input_rate (bps)": "",
+                    "output_rate (bps)": "",
                     "input_packets": "",
+                    "input_bytes": "",
                     "output_packets": "",
+                    "output_bytes": "",
                     "input_errors": "",
                     "output_errors": "",
+                    "crc_errors": "",
+                    "frame_errors": "",
+                    "overrun_errors": "",
                     "unknown_protocols": "",
                     "broadcasts_received": "",
                     "multicasts_received": "",
@@ -774,6 +806,11 @@ class CiscoInterfaceParser(CiscoConfigParser):
                 # If it's a Vlan or Loopback interface, force mode to routed immediately
                 if interface_type in ["vlan", "loopback"]:
                     self.interfaces[normalized_name]["mode"] = "routed"
+                    # Extract and set VLAN number for VLAN interfaces
+                    if interface_type == "vlan":
+                        vlan_match = re.search(r'vlan(\d+)', normalized_name, re.IGNORECASE)
+                        if vlan_match:
+                            self.interfaces[normalized_name]["vlan"] = vlan_match.group(1)
                     logger.debug(f"    Interface type is {interface_type}, setting mode to routed")
 
                 # Parse interface details
@@ -994,14 +1031,14 @@ class CiscoInterfaceParser(CiscoConfigParser):
                             self.interfaces[if_name]["bia_address"] = hw_match.group(3)
 
                     # Extract duplex, speed, link type and media type
-                    link_info_match = re.search(r'((?:Auto|Full|Half)-duplex), (\d+(?:\.\d+)?[MG]b/s)(?:, link type is ([\w-]+))?,?\s*(?:media type is ([\w-]+\s*[\w-]+))?', section)
+                    link_info_match = re.search(r'((?:Auto|Full|Half)-duplex), (\d+(?:\.\d+)?[MG]b/s)(?:, link type is ([\w-]+))?,?\s*(?:media type is ((?:[\w-]+(?:/[\w-]+)*)+(?:\s+[\w-]+)*(?:\s+SFP)?))(?:\s*$|\n)', section)
                     if link_info_match:
                         self.interfaces[if_name]["duplex"] = link_info_match.group(1)
                         self.interfaces[if_name]["speed"] = link_info_match.group(2)
                         if link_info_match.group(3):
                             self.interfaces[if_name]["link_type"] = link_info_match.group(3)
                         if link_info_match.group(4):
-                            self.interfaces[if_name]["media_type"] = link_info_match.group(4)
+                            self.interfaces[if_name]["media_type"] = link_info_match.group(4).strip()
 
                     # Extract flow control information
                     flow_control_match = re.search(r'input flow-control is (\w+), output flow-control is (\w+)', section)
@@ -1026,8 +1063,29 @@ class CiscoInterfaceParser(CiscoConfigParser):
                     # Extract input/output rates
                     rate_match = re.search(r'(\d+) minute input rate (\d+) bits/sec.*?(\d+) minute output rate (\d+) bits/sec', section, re.DOTALL)
                     if rate_match:
-                        self.interfaces[if_name]["input_rate"] = f"{rate_match.group(2)} bits/sec"
-                        self.interfaces[if_name]["output_rate"] = f"{rate_match.group(4)} bits/sec"
+                        self.interfaces[if_name]["input_rate (bps)"] = rate_match.group(2)
+                        self.interfaces[if_name]["output_rate (bps)"] = rate_match.group(4)
+
+                    # Extract packet statistics
+                    packets_match = re.search(r'(\d+) packets input,\s*(\d+) bytes.*?(\d+) packets output,\s*(\d+) bytes', section, re.DOTALL)
+                    if packets_match:
+                        self.interfaces[if_name]["input_packets"] = packets_match.group(1)
+                        self.interfaces[if_name]["input_bytes"] = packets_match.group(2)
+                        self.interfaces[if_name]["output_packets"] = packets_match.group(3)
+                        self.interfaces[if_name]["output_bytes"] = packets_match.group(4)
+
+                    # Extract error statistics
+                    input_errors_match = re.search(r'(\d+) input errors,\s*(\d+) CRC,\s*(\d+) frame,\s*(\d+) overrun', section)
+                    if input_errors_match:
+                        self.interfaces[if_name]["input_errors"] = input_errors_match.group(1)
+                        self.interfaces[if_name]["crc_errors"] = input_errors_match.group(2)
+                        self.interfaces[if_name]["frame_errors"] = input_errors_match.group(3)
+                        self.interfaces[if_name]["overrun_errors"] = input_errors_match.group(4)
+
+                    # Extract output errors
+                    output_errors_match = re.search(r'(\d+) output errors', section)
+                    if output_errors_match:
+                        self.interfaces[if_name]["output_errors"] = output_errors_match.group(1)
 
                     # Extract broadcast/multicast information
                     broadcast_match = re.search(r'Received (\d+) broadcasts \((\d+) multicasts\)', section)
@@ -1051,6 +1109,28 @@ class CiscoInterfaceParser(CiscoConfigParser):
                         total_transitions = int(carrier_match.group(1)) + int(carrier_match.group(2))
                         self.interfaces[if_name]["carrier_transitions"] = str(total_transitions)
 
+                    # Extract encapsulation
+                    encap_match = re.search(r'Encapsulation (\w+)', section)
+                    if encap_match:
+                        self.interfaces[if_name]["encapsulation"] = encap_match.group(1)
+
+                    # Extract ARP timeout
+                    arp_match = re.search(r'ARP Timeout (\d{2}:\d{2}:\d{2})', section)
+                    if arp_match:
+                        self.interfaces[if_name]["arp_timeout"] = arp_match.group(1)
+
+                    # Extract last input/output times
+                    last_io_match = re.search(r'Last input ([\w\d:]+), output ([\w\d:]+), output hang ([\w\d:]+)', section)
+                    if last_io_match:
+                        self.interfaces[if_name]["last_input"] = last_io_match.group(1)
+                        self.interfaces[if_name]["last_output"] = last_io_match.group(2)
+                        self.interfaces[if_name]["last_output_hang"] = last_io_match.group(3)
+
+                    # Extract queueing strategy
+                    queue_match = re.search(r'Queueing strategy: (\w+)', section)
+                    if queue_match:
+                        self.interfaces[if_name]["queue_strategy"] = queue_match.group(1)
+
             logger.info("END - Updating interface status information")
 
         except Exception as e:
@@ -1058,77 +1138,83 @@ class CiscoInterfaceParser(CiscoConfigParser):
             logger.info("END - Updating interface status information (with errors)")
 
     def _parse_show_interfaces_trunk(self) -> None:
-        """Parse the 'show interfaces trunk' output."""
-        if not self.show_interfaces_trunk:
-            logger.warning("No trunk data found to parse")
-            return
-
-        self.trunk_data = []
+        """Parse 'show interfaces trunk' output."""
+        trunk_data = {}
         current_section = None
-        port_data = {}
-        
-        # Initialize section patterns
-        port_pattern = re.compile(r'^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)')
+        current_interface = None
+
+        # Initialize patterns
+        interface_pattern = re.compile(r'^(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)')
         vlan_pattern = re.compile(r'^(\S+)\s+(.+)$')
-        
-        for line in self.show_interfaces_trunk.split('\n'):
+
+        for line in self.show_interfaces_trunk.splitlines():
             line = line.strip()
             
             # Skip empty lines
             if not line:
                 continue
-                
-            # Check for section headers
-            if line.startswith('Port'):
-                current_section = 'port'
+
+            # Detect section headers
+            if 'Port' in line and 'Mode' in line:
+                current_section = 'ports'
                 continue
-            elif line.startswith('Vlans allowed on trunk'):
+            elif 'Vlans allowed on trunk' in line:
                 current_section = 'allowed'
                 continue
-            elif line.startswith('Vlans allowed and active'):
+            elif 'Vlans allowed and active in management domain' in line:
                 current_section = 'active'
                 continue
-            elif line.startswith('Vlans in spanning tree forwarding'):
+            elif 'Vlans in spanning tree forwarding state' in line:
                 current_section = 'forwarding'
                 continue
-                
-            # Parse data based on current section
-            if current_section == 'port':
-                match = port_pattern.match(line)
+
+            # Process data based on current section
+            if current_section == 'ports':
+                match = interface_pattern.match(line)
                 if match:
-                    port, mode, encap, status = match.groups()
-                    if port not in port_data:
-                        # Get interface description from parsed interfaces
-                        description = ""
-                        if hasattr(self, 'interfaces') and port in self.interfaces:
-                            description = self.interfaces[port].get('Description', '')
-                            
-                        port_data[port] = {
-                            'Host': self.hostname,
-                            'Interface': port,
-                            'Description': description,
-                            'Mode': mode,
-                            'Native VLAN': encap,
-                            'Allowed VLANs': '',
-                            'Active VLANs': '',
-                            'Forwarding VLANs': ''
-                        }
-                        
-            elif current_section in ['allowed', 'active', 'forwarding']:
+                    current_interface = match.group(1)
+                    trunk_data[current_interface] = {
+                        'mode': match.group(2),
+                        'encapsulation': match.group(3),
+                        'status': match.group(4),
+                        'native_vlan': match.group(5),
+                        'allowed_vlans': [],
+                        'active_vlans': [],
+                        'forwarding_vlans': []
+                    }
+            elif current_section in ['allowed', 'active', 'forwarding'] and current_interface:
                 match = vlan_pattern.match(line)
                 if match:
-                    port, vlans = match.groups()
-                    if port in port_data:
-                        if current_section == 'allowed':
-                            port_data[port]['Allowed VLANs'] = vlans.strip()
-                        elif current_section == 'active':
-                            port_data[port]['Active VLANs'] = vlans.strip()
-                        elif current_section == 'forwarding':
-                            port_data[port]['Forwarding VLANs'] = vlans.strip()
-        
-        # Add all port data to trunk_data list
-        self.trunk_data.extend(port_data.values())
-        logger.info(f"Found {len(self.trunk_data)} trunk interfaces")
+                    # Skip the interface name column if present
+                    vlan_list = match.group(2) if match.group(1) == current_interface else match.group(1)
+                    # Convert VLAN ranges to list of VLANs
+                    vlans = self._expand_vlan_range(vlan_list)
+                    
+                    if current_section == 'allowed':
+                        trunk_data[current_interface]['allowed_vlans'] = vlans
+                    elif current_section == 'active':
+                        trunk_data[current_interface]['active_vlans'] = vlans
+                    elif current_section == 'forwarding':
+                        trunk_data[current_interface]['forwarding_vlans'] = vlans
+
+        # Log the final trunk data for debugging
+        logger.debug(f"Parsed trunk data: {json.dumps(trunk_data, indent=2)}")
+        self.trunk_data = trunk_data
+
+    def _expand_vlan_range(self, vlan_str: str) -> List[int]:
+        """Convert a VLAN range string to a list of individual VLAN numbers."""
+        vlans = []
+        for part in vlan_str.split(','):
+            if '-' in part:
+                start, end = map(int, part.split('-'))
+                vlans.extend(range(start, end + 1))
+            else:
+                try:
+                    vlans.append(int(part))
+                except ValueError:
+                    logger.warning(f"Invalid VLAN number: {part}")
+                    continue
+        return sorted(list(set(vlans)))  # Remove duplicates and sort
 
     def _parse_cdp_neighbor_detail(self) -> None:
         """Parse the output of 'show cdp neighbor detail' command."""
