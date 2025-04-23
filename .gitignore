@@ -36,3 +36,17 @@ output/*
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Poetry
+.poetry/
+poetry.lock
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Django
+*.sqlite3
+media/
+staticfiles/

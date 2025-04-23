@@ -130,7 +130,9 @@ The parser generates Excel files with multiple sheets based on device type:
    - Port-channel membership
 
 2. **Trunks Sheet**
-   - Trunk port details
+   - interface
+   - description (from 'show interfaces' output)
+
    - Allowed VLAN ranges
    - Active and forwarding VLANs
 

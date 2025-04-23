@@ -1,0 +1,43 @@
+# Advanced Features
+
+This rule outlines the advanced features planned for the Django network configuration application.
+
+## SSH Connectivity
+The application will support direct device connectivity via SSH:
+- Netmiko integration for device connections
+- Secure credential storage and management
+- Command template system for different device types
+- Automated data collection from live devices
+- Scheduled collection for regular configuration backups
+
+## API Integration
+API integration will be implemented for cloud-managed platforms:
+- API clients for platforms like Meraki, Cisco DNA Center
+- Secure API key management
+- Data transformation from API responses to internal models
+- Configuration interface for API endpoints
+- Rate limiting and error handling
+
+## Data Comparison System
+A comprehensive comparison system will allow users to:
+- Compare different iterations of the same device
+- Compare configurations across different devices
+- Highlight differences with visual indicators
+- Filter comparisons to focus on specific aspects
+- Export comparison results for documentation
+
+## File Upload System
+The file upload system will include:
+- Progress tracking for file processing
+- Background task processing with Celery
+- Secure file storage management
+- Device type detection from uploaded files
+- Integration with the parser system
+
+## Multi-user Collaboration
+Collaboration features will enable team-based work:
+- Sharing of devices, projects, and customers between users
+- Comments and annotations on configurations
+- Activity tracking for audit purposes
+- Notifications for important changes
+- Role-based access controls for sensitive operations

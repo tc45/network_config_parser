@@ -114,56 +114,79 @@ class CiscoConfigParser:
         logger.info("START - Extracting sections from show tech file")
         self.sections = {}
         found_commands = [] # Log commands found
+
+        # Determine device type first by reading just the version section
         try:
             with open(self.show_tech_file, 'r', encoding='ascii', errors='ignore') as f:
-                content = f.read()
-
-            # Multiple patterns to find section headers
-            header_patterns = [
-                # Classic pattern with dashes/stars/equals
-                r"^(?:-{5,}|\*{5,}|={5,})\s*(show\s+.*?)\s*(?:-{5,}|\*{5,}|={5,})\s*$",
-                # Nexus-style with backticks
-                r"^(?:`|')\s*(show\s+.*?)\s*(?:`|')\s*$",
-                # Simple show command at start of line
-                r"^(show\s+(?:ip\s+)?(?:interface|cdp|trunk).*?)(?:\n|$)",
-                # Command with timestamp
-                r"^\d{2}:\d{2}:\d{2}.\d{3}\s+(show\s+.*?)(?:\n|$)"
-            ]
-
-            # Try each pattern
-            for pattern in header_patterns:
-                header_pattern = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
-                matches = list(header_pattern.finditer(content))
-                logger.debug(f"Found {len(matches)} potential section headers using pattern: {pattern}")
-
-                for i, match in enumerate(matches):
-                    # The header line itself is the match
-                    header_line_end_pos = match.end()
-                    # Content starts *after* the header line
-                    content_start_pos = header_line_end_pos + 1 # Skip the newline after header
+                # Read chunks to find show version section
+                chunk_size = 8192  # 8KB chunks
+                content = ""
+                version_found = False
+                
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    content += chunk
                     
-                    # Command is the 1st capture group, normalize whitespace and case
-                    command = " ".join(match.group(1).lower().split())
+                    # Try to find version section in accumulated content
+                    if '`show version`' in content or '------------------ show version ------------------' in content:
+                        version_found = True
+                        break
                     
-                    # Skip if we already found this command with a previous pattern
-                    if command in self.sections:
+                    # Keep only the last chunk in case the pattern spans chunks
+                    if len(content) > chunk_size * 2:
+                        content = content[-chunk_size:]
+
+                if not version_found:
+                    logger.warning("Could not find version section in first pass")
+                    self.device_type = "Unknown Cisco Device"
+                else:
+                    self.device_type = _determine_device_type(content)
+
+            # Now process the file based on device type
+            header_pattern = None
+            if self.device_type == "Nexus Switch":
+                header_pattern = r"^(?:`|')\s*(show\s+.*?)\s*(?:`|')\s*$"
+                logger.debug("Using Nexus pattern for section extraction")
+            else:
+                header_pattern = r"^(?:-{5,}|\*{5,}|={5,})\s*(show\s+.*?)\s*(?:-{5,}|\*{5,}|={5,})\s*$"
+                logger.debug("Using IOS pattern for section extraction")
+
+            # Process file in chunks for section extraction
+            with open(self.show_tech_file, 'r', encoding='ascii', errors='ignore') as f:
+                current_command = None
+                current_content = []
+                
+                for line in f:
+                    line = line.rstrip('\n')
+                    
+                    # Check if line matches header pattern
+                    match = re.match(header_pattern, line)
+                    if match:
+                        # Save previous section if exists
+                        if current_command:
+                            section_content = '\n'.join(current_content)
+                            if section_content:
+                                self.sections[current_command] = section_content
+                                logger.debug(f"Extracted section: '{current_command}' ({len(section_content)} chars)")
+                                found_commands.append(current_command)
+                            
+                        # Start new section
+                        current_command = match.group(1)
+                        current_content = []
                         continue
-                        
-                    found_commands.append(command) # Add command to list for logging
-                    logger.debug(f"Found section header: '{command}' matching line: {match.group(0)}")
-
-                    # Find end of section - look for next header or end of file
-                    # First try to find the next header from any pattern
-                    next_header_pos = len(content)
-                    for next_pattern in header_patterns:
-                        next_match = re.compile(next_pattern, re.IGNORECASE | re.MULTILINE).search(content, header_line_end_pos + 1)
-                        if next_match and next_match.start() < next_header_pos:
-                            next_header_pos = next_match.start()
                     
-                    section_content = content[content_start_pos:next_header_pos].strip()
-                    if section_content:  # Only store if we found content
-                        self.sections[command] = section_content
-                        logger.debug(f"Extracted section: '{command}' ({len(section_content)} chars)")
+                    # Add line to current section if we're in one
+                    if current_command:
+                        current_content.append(line)
+
+                # Save last section
+                if current_command and current_content:
+                    section_content = '\n'.join(current_content)
+                    self.sections[current_command] = section_content
+                    logger.debug(f"Extracted section: '{current_command}' ({len(section_content)} chars)")
+                    found_commands.append(current_command)
 
             if not self.sections:
                 logger.warning(f"No sections extracted using header patterns. File might have unexpected format: {self.show_tech_file}")

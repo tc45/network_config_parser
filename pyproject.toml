@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "netprism"
+version = "0.1.0"
+description = "Network Configuration Parser and Analyzer for various network devices"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = []
+
+[tool.poetry.dependencies]
+python = "^3.10"
+django = "^4.2"
+django-environ = "^0.11.2"
+psycopg2-binary = "^2.9.9"
+python-decouple = "^3.8"
+whitenoise = "^6.6.0"
+ciscoconfparse2 = "^3.4.3"
+openpyxl = "^3.1.2"
+rich = "^13.7.0"
+tabulate = "^0.9.0"
+pandas = "^2.2.0"
+ipaddress = "^1.0.23"
+typing-extensions = "^4.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-django = "^4.7.0"
+black = "^23.11.0"
+isort = "^5.12.0"
+flake8 = "^6.1.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+python_files = ["test_*.py", "*_test.py"] 

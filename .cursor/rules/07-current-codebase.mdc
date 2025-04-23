@@ -1,0 +1,44 @@
+# Current Codebase Structure and Evolution
+
+This rule outlines the current codebase structure and how it will evolve into the Django application.
+
+## Current Structure
+The current CLI application consists of:
+- [main.py](mdc:main.py): Entry point that handles file selection and parser orchestration
+- [apps/identify.py](mdc:apps/identify.py): Device type identification from configuration files
+- [apps/cisco_if_parser.py](mdc:apps/cisco_if_parser.py): Parser for Cisco IOS/NXOS devices
+- [apps/asa_parser.py](mdc:apps/asa_parser.py): Parser for Cisco ASA firewalls
+- [apps/palo_alto.py](mdc:apps/palo_alto.py): Parser for Palo Alto devices
+- [apps/utils.py](mdc:apps/utils.py): General utility functions
+- [apps/exporter.py](mdc:apps/exporter.py): Handles export to Excel spreadsheets
+- [apps/netmiko_util.py](mdc:apps/netmiko_util.py): Netmiko integration for SSH connectivity
+
+## Code Evolution
+Current components will evolve as follows:
+
+### Device Identification
+- Current: Simple regex pattern matching in [apps/identify.py](mdc:apps/identify.py)
+- Future: Enhanced identification with ntc-templates platform detection
+
+### Cisco Parser
+- Current: Complex regex-based parsing in [apps/cisco_if_parser.py](mdc:apps/cisco_if_parser.py)
+- Future: Simpler adapter using ntc-templates with standardized data models
+
+### ASA Parser
+- Current: Custom parser in [apps/asa_parser.py](mdc:apps/asa_parser.py)
+- Future: ntc-templates integration with specialized ASA adapters
+
+### Palo Alto Parser
+- Current: Custom parsing in [apps/palo_alto.py](mdc:apps/palo_alto.py)
+- Future: Streamlined with standardized data models and API integration
+
+### Export Functionality
+- Current: Direct Excel export in [apps/exporter.py](mdc:apps/exporter.py)
+- Future: Flexible export system with multiple formats and templates
+
+## Implementation Strategy
+The implementation will follow a progressive enhancement approach:
+1. Create Django project structure with core models
+2. Refactor existing parsers to use ntc-templates
+3. Implement database storage and web interface
+4. Add advanced features while maintaining backward compatibility
